@@ -1,24 +1,24 @@
-#include <Windows.h>
+#include <stdio.h>
 
+#include <km_common/km_debug.h>
 #include <km_common/km_defines.h>
+#include <km_common/km_lib.h>
 
-void UseUpThatStackSpace()
-{
-    uint8 buffer[4096];
-    int i = 0;
-    while (i != 109238) {
-        buffer[i % 4096] = (char)(i % 256);
-    }
-}
+#define LOG_ERROR(format, ...) fprintf(stderr, format, ##__VA_ARGS__)
+#define LOG_INFO(format, ...)  fprintf(stdout, format, ##__VA_ARGS__)
+#define LOG_FLUSH() fflush(stderr); fflush(stdout)
 
-int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
-{
-    int hello[1024] = {0};
-    
-    UseUpThatStackSpace();
-    
-    float f = 1.0f;
-    float g = f + 1.0f;
-    
-    ExitProcess(0);
-}
+const int WINDOW_START_WIDTH  = 1600;
+const int WINDOW_START_HEIGHT = 900;
+
+const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
+const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
+
+#if GAME_WIN32
+#include "win32_main.cpp"
+#else
+#error "Unsupported platform"
+#endif
+
+#include <km_common/km_lib.cpp>
+#include <km_common/km_string.cpp>

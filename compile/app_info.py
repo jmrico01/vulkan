@@ -16,6 +16,7 @@ TARGETS = [
                     "-wd4201",    # nonstandard extension used: nameless struct/union
                 ],
                 linker_flags=[
+                    "user32.lib",
                     # "-subsystem:windows",      # Windows application (no console)
                     # "-nodefaultlib",           # No sneaky CRT or kernel32.lib
                     # "-STACK:0x100000,0x100000" # Allocate and commit 1MB for main thread's stack
