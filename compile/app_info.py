@@ -14,9 +14,12 @@ TARGETS = [
                     # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
 
                     "-wd4201",    # nonstandard extension used: nameless struct/union
+                    "-I\"C:\\VulkanSDK\\1.2.135.0\\Include\"", # HACK
                 ],
                 linker_flags=[
+                    "-LIBPATH:\"C:\\VulkanSDK\\1.2.135.0\\Lib\"", # HACK
                     "user32.lib",
+                    "vulkan-1.lib",
                     # "-subsystem:windows",      # Windows application (no console)
                     # "-nodefaultlib",           # No sneaky CRT or kernel32.lib
                     # "-STACK:0x100000,0x100000" # Allocate and commit 1MB for main thread's stack
