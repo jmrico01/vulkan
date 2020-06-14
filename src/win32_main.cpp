@@ -113,6 +113,45 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSev
     return VK_FALSE;
 }
 
+struct QueueFamilyInfo
+{
+    bool hasGraphicsFamily;
+    uint32_t graphicsFamilyIndex;
+};
+
+QueueFamilyInfo GetQueueFamilyInfo(VkPhysicalDevice device, LinearAllocator* allocator)
+{
+    QueueFamilyInfo info;
+    info.hasGraphicsFamily = false;
+
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+
+    DynamicArray<VkQueueFamilyProperties, LinearAllocator> queueFamilies(queueFamilyCount, allocator);
+    queueFamilies.size = queueFamilyCount;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data);
+
+    for (uint64 i = 0; i < queueFamilies.size; i++) {
+        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            info.hasGraphicsFamily = true;
+            info.graphicsFamilyIndex = (uint32_t)i;
+        }
+    }
+
+    return info;
+}
+
+bool IsPhysicalDeviceSuitable(VkPhysicalDevice device, LinearAllocator* allocator)
+{
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(device, &deviceProperties);
+
+    VkPhysicalDeviceFeatures deviceFeatures;
+    vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+    return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && deviceFeatures.geometryShader;
+}
+
 int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
@@ -153,113 +192,152 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     {
         LinearAllocator allocator(transientMemory.size, transientMemory.data);
 
-        VkApplicationInfo appInfo = {};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "vulkan";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "km3d";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
-
-        uint32_t layerCount;
-        if (vkEnumerateInstanceLayerProperties(&layerCount, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
-            return 1;
-        }
-
-        DynamicArray<VkLayerProperties, LinearAllocator> layers(layerCount, &allocator);
-        layers.size = layerCount;
-        if (vkEnumerateInstanceLayerProperties(&layerCount, layers.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
-            return 1;
-        }
-
+        // Verify required layers
         const char* requiredLayers[] = {
             "VK_LAYER_KHRONOS_validation",
         };
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredLayers); i++) {
-            const_string requiredLayer = ToString(requiredLayers[i]);
+        {
+            uint32_t count;
+            if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
+                LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+                return 1;
+            }
 
-            bool found = false;
-            for (uint64 j = 0; j < layers.size; j++) {
-                const_string layerName = ToString(layers[j].layerName);
-                if (StringEquals(requiredLayer, layerName)) {
-                    found = true;
-                    break;
+            DynamicArray<VkLayerProperties, LinearAllocator> layers(count, &allocator);
+            layers.size = count;
+            if (vkEnumerateInstanceLayerProperties(&count, layers.data) != VK_SUCCESS) {
+                LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+                return 1;
+            }
+
+            for (int i = 0; i < C_ARRAY_LENGTH(requiredLayers); i++) {
+                const_string requiredLayer = ToString(requiredLayers[i]);
+
+                bool found = false;
+                for (uint64 j = 0; j < layers.size; j++) {
+                    const_string layerName = ToString(layers[j].layerName);
+                    if (StringEquals(requiredLayer, layerName)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    LOG_ERROR("Required Vulkan layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
+                    return 1;
                 }
             }
-            if (!found) {
-                LOG_ERROR("Required Vulkan layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
+        }
+
+        // Verify required extensions
+        const char* requiredExtensions[] = {
+            VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+        };
+        {
+            uint32_t count;
+            if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) {
+                LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+                return 1;
+            }
+
+            DynamicArray<VkExtensionProperties, LinearAllocator> extensions(count, &allocator);
+            extensions.size = count;
+            if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data) != VK_SUCCESS) {
+                LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+                return 1;
+            }
+
+            for (int i = 0; i < C_ARRAY_LENGTH(requiredExtensions); i++) {
+                const_string requiredExtension = ToString(requiredExtensions[i]);
+
+                bool found = false;
+                for (uint64 j = 0; j < extensions.size; j++) {
+                    const_string extensionName = ToString(extensions[j].extensionName);
+                    if (StringEquals(requiredExtension, extensionName)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    LOG_ERROR("Required Vulkan extension not found: %.*s\n",
+                              (int)requiredExtension.size, requiredExtension.data);
+                }
+            }
+        }
+
+        // Create VkInstance
+        {
+            VkApplicationInfo appInfo = {};
+            appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+            appInfo.pApplicationName = "vulkan";
+            appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+            appInfo.pEngineName = "km3d";
+            appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+            appInfo.apiVersion = VK_API_VERSION_1_0;
+
+            VkInstanceCreateInfo createInfo = {};
+            createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+            createInfo.pApplicationInfo = &appInfo;
+            // TODO don't do this in release mode
+            createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
+            createInfo.ppEnabledLayerNames = requiredLayers;
+            createInfo.enabledExtensionCount = C_ARRAY_LENGTH(requiredExtensions);
+            createInfo.ppEnabledExtensionNames = requiredExtensions;
+
+            if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
+                LOG_ERROR("vkCreateInstance failed\n");
                 return 1;
             }
         }
 
-        uint32_t extensionCount;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
-            return 1;
+        // Set up debug messenger
+        {
+            VkDebugUtilsMessengerCreateInfoEXT debugMessengerCreateInfo = {};
+            debugMessengerCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            debugMessengerCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+            debugMessengerCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            debugMessengerCreateInfo.pfnUserCallback = VulkanDebugCallback;
+            debugMessengerCreateInfo.pUserData = nullptr;
+
+            auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+            if (vkCreateDebugUtilsMessengerEXT == nullptr) {
+                LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
+                return 1;
+            }
+
+            if (vkCreateDebugUtilsMessengerEXT(instance, &debugMessengerCreateInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+                LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
+                return 1;
+            }
         }
 
-        DynamicArray<VkExtensionProperties, LinearAllocator> extensions(extensionCount, &allocator);
-        extensions.size = extensionCount;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
-            return 1;
-        }
+        // Select physical device
+        {
+            uint32_t deviceCount = 0;
+            vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+            if (deviceCount == 0) {
+                LOG_ERROR("vkEnumeratePhysicalDevices returned 0 devices - no GPUs with Vulkan support\n");
+                return 1;
+            }
 
-        const char* requiredExtensions[] = {
-            VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-        };
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredExtensions); i++) {
-            const_string requiredExtension = ToString(requiredExtensions[i]);
+            DynamicArray<VkPhysicalDevice, LinearAllocator> devices(deviceCount, &allocator);
+            devices.size = deviceCount;
+            vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data);
 
-            bool found = false;
-            for (uint64 j = 0; j < extensions.size; j++) {
-                const_string extensionName = ToString(extensions[j].extensionName);
-                if (StringEquals(requiredExtension, extensionName)) {
-                    found = true;
+            for (uint64 i = 0; i < devices.size; i++) {
+                if (IsPhysicalDeviceSuitable(devices[i], &allocator)) {
+                    physicalDevice = devices[i];
                     break;
                 }
             }
-            if (!found) {
-                LOG_ERROR("Required Vulkan extension not found: %.*s\n",
-                          (int)requiredExtension.size, requiredExtension.data);
+
+            if (physicalDevice == VK_NULL_HANDLE) {
+                LOG_ERROR("Failed to find a suitable GPU for Vulkan\n");
+                return 1;
             }
-        }
-
-        VkInstanceCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
-        // TODO don't do this in release mode
-        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
-        createInfo.ppEnabledLayerNames = requiredLayers;
-        createInfo.enabledExtensionCount = C_ARRAY_LENGTH(requiredExtensions);
-        createInfo.ppEnabledExtensionNames = requiredExtensions;
-
-        if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateInstance failed\n");
-            return 1;
-        }
-
-        VkDebugUtilsMessengerCreateInfoEXT debugMessengerCreateInfo = {};
-        debugMessengerCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        debugMessengerCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-        debugMessengerCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        debugMessengerCreateInfo.pfnUserCallback = VulkanDebugCallback;
-        debugMessengerCreateInfo.pUserData = nullptr;
-
-        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-        if (vkCreateDebugUtilsMessengerEXT == nullptr) {
-            LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
-            return 1;
-        }
-
-        if (vkCreateDebugUtilsMessengerEXT(instance, &debugMessengerCreateInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
-            return 1;
         }
     }
 
