@@ -23,4 +23,5 @@ const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 #include <km_common/km_container.cpp>
 #include <km_common/km_lib.cpp>
 #include <km_common/km_memory.cpp>
+#include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>
