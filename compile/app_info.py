@@ -1,5 +1,11 @@
+import os
+import subprocess
+
 from compile import Platform, TargetType, Define, PlatformTargetOptions, BuildTarget, CopyDir, LibExternal
 from env_settings import WIN32_VCVARSALL
+
+# TODO hack!
+VULKAN_PATH = "C:\\VulkanSDK\\1.2.135.0"
 
 TARGETS = [
     BuildTarget("vulkan",
@@ -14,10 +20,10 @@ TARGETS = [
                     # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
 
                     "-wd4201",    # nonstandard extension used: nameless struct/union
-                    "-I\"C:\\VulkanSDK\\1.2.135.0\\Include\"", # HACK
+                    "-I\"" + VULKAN_PATH + "\\Include\"", # HACK
                 ],
                 linker_flags=[
-                    "-LIBPATH:\"C:\\VulkanSDK\\1.2.135.0\\Lib\"", # HACK
+                    "-LIBPATH:\"" + VULKAN_PATH + "\\Lib\"", # HACK
                     "user32.lib",
                     "vulkan-1.lib",
                     # "-subsystem:windows",      # Windows application (no console)
@@ -30,7 +36,8 @@ TARGETS = [
 ]
 
 COPY_DIRS = [
-    CopyDir("data", "data")
+    CopyDir("data", "data"),
+	CopyDir("src/shaders", "data/shaders")
 ]
 
 DEPLOY_FILES = [
@@ -52,8 +59,15 @@ LIBS_EXTERNAL = [
 ]
 
 PATHS = {
-	"win32-vcvarsall": WIN32_VCVARSALL
+    "win32-vcvarsall": WIN32_VCVARSALL
 }
 
 def post_compile_custom(paths):
-	pass
+    shader_path = "build/data/shaders"
+    for file in os.listdir(shader_path):
+        if len(file) >= 5 and (file[-5:] == ".vert" or file[-5:] == ".frag"):
+            shader_file_path = shader_path + "/" + file
+            output_file_path = shader_path + "/" + file + ".spv"
+            subprocess.call(VULKAN_PATH + "\\Bin\\glslc.exe " + shader_file_path + " -o " + output_file_path, shell=True)
+            os.remove(shader_file_path)
+
