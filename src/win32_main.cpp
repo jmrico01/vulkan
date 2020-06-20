@@ -216,226 +216,8 @@ bool CreateShaderModule(const Array<uint8> code, VkDevice device, VkShaderModule
     return vkCreateShaderModule(device, &createInfo, nullptr, shaderModule) == VK_SUCCESS;
 }
 
-bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int windowSize,
-                     LinearAllocator* allocator)
+bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator)
 {
-    // Verify required layers
-    const char* requiredLayers[] = {
-        "VK_LAYER_KHRONOS_validation",
-    };
-    {
-        uint32_t count;
-        if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
-            return false;
-        }
-
-        DynamicArray<VkLayerProperties, LinearAllocator> layers(count, allocator);
-        layers.size = count;
-        if (vkEnumerateInstanceLayerProperties(&count, layers.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
-            return false;
-        }
-
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredLayers); i++) {
-            const_string requiredLayer = ToString(requiredLayers[i]);
-
-            bool found = false;
-            for (uint64 j = 0; j < layers.size; j++) {
-                const_string layerName = ToString(layers[j].layerName);
-                if (StringEquals(requiredLayer, layerName)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                LOG_ERROR("Required Vulkan instance layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
-                return false;
-            }
-        }
-    }
-
-    // Verify required extensions
-    const char* requiredExtensions[] = {
-        "VK_KHR_surface",
-        "VK_KHR_win32_surface",
-        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-    };
-    {
-        uint32_t count;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
-            return false;
-        }
-
-        DynamicArray<VkExtensionProperties, LinearAllocator> extensions(count, allocator);
-        extensions.size = count;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
-            return false;
-        }
-
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredExtensions); i++) {
-            const_string requiredExtension = ToString(requiredExtensions[i]);
-
-            bool found = false;
-            for (uint64 j = 0; j < extensions.size; j++) {
-                const_string extensionName = ToString(extensions[j].extensionName);
-                if (StringEquals(requiredExtension, extensionName)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                LOG_ERROR("Required Vulkan instance extension not found: %.*s\n",
-                          (int)requiredExtension.size, requiredExtension.data);
-            }
-        }
-    }
-
-    // Create VkInstance
-    {
-        VkApplicationInfo appInfo = {};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "vulkan";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "km3d";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
-
-        VkInstanceCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
-        // TODO don't do this in release mode
-        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
-        createInfo.ppEnabledLayerNames = requiredLayers;
-        createInfo.enabledExtensionCount = C_ARRAY_LENGTH(requiredExtensions);
-        createInfo.ppEnabledExtensionNames = requiredExtensions;
-
-        if (vkCreateInstance(&createInfo, nullptr, &state->instance) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateInstance failed\n");
-            return false;
-        }
-    }
-
-    // Set up debug messenger
-    {
-        VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        createInfo.pfnUserCallback = VulkanDebugCallback;
-        createInfo.pUserData = nullptr;
-
-        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkCreateDebugUtilsMessengerEXT");
-        if (vkCreateDebugUtilsMessengerEXT == nullptr) {
-            LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
-            return false;
-        }
-
-        if (vkCreateDebugUtilsMessengerEXT(state->instance, &createInfo, nullptr, &state->debugMessenger) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
-            return false;
-        }
-    }
-
-    // Create window surface
-    {
-        VkWin32SurfaceCreateInfoKHR createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        createInfo.hwnd = hWnd;
-        createInfo.hinstance = hInstance;
-
-        if (vkCreateWin32SurfaceKHR(state->instance, &createInfo, nullptr, &state->surface) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateWin32SurfaceKHR failed\n");
-            return false;
-        }
-    }
-
-    // Select physical device
-    {
-        const char* requiredDeviceExtensions[] = {
-            VK_KHR_SWAPCHAIN_EXTENSION_NAME
-        };
-        Array<const char*> requiredDeviceExtensionsArray = {
-            .size = C_ARRAY_LENGTH(requiredDeviceExtensions),
-            .data = requiredDeviceExtensions
-        };
-
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(state->instance, &deviceCount, nullptr);
-        if (deviceCount == 0) {
-            LOG_ERROR("vkEnumeratePhysicalDevices returned 0 devices - no GPUs with Vulkan support\n");
-            return false;
-        }
-
-        DynamicArray<VkPhysicalDevice, LinearAllocator> devices(deviceCount, allocator);
-        devices.size = deviceCount;
-        vkEnumeratePhysicalDevices(state->instance, &deviceCount, devices.data);
-
-        state->physicalDevice = VK_NULL_HANDLE;
-        for (uint64 i = 0; i < devices.size; i++) {
-            if (IsPhysicalDeviceSuitable(state->surface, devices[i], requiredDeviceExtensionsArray, allocator)) {
-                state->physicalDevice = devices[i];
-                break;
-            }
-        }
-
-        if (state->physicalDevice == VK_NULL_HANDLE) {
-            LOG_ERROR("Failed to find a suitable GPU for Vulkan\n");
-            return false;
-        }
-
-        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(state->surface, state->physicalDevice, allocator);
-        uint32_t queueFamilyIndices[] = {
-            queueFamilyInfo.graphicsFamilyIndex,
-            queueFamilyInfo.presentFamilyIndex
-        };
-
-        DynamicArray<VkDeviceQueueCreateInfo, LinearAllocator> queueCreateInfos(allocator);
-        float32 queuePriority = 1.0f;
-        for (int i = 0; i < C_ARRAY_LENGTH(queueFamilyIndices); i++) {
-            bool repeatIndex = false;
-            for (int j = 0; j < i; j++) {
-                if (queueFamilyIndices[i] == queueFamilyIndices[j]) {
-                    repeatIndex = true;
-                    break;
-                }
-            }
-            if (repeatIndex) {
-                continue;
-            }
-
-            VkDeviceQueueCreateInfo* queueCreateInfo = queueCreateInfos.Append();
-            queueCreateInfo->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-            queueCreateInfo->queueFamilyIndex = queueFamilyIndices[i];
-            queueCreateInfo->queueCount = 1;
-            queueCreateInfo->pQueuePriorities = &queuePriority;
-        }
-
-        VkPhysicalDeviceFeatures deviceFeatures = {};
-
-        VkDeviceCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pQueueCreateInfos = queueCreateInfos.data;
-        createInfo.queueCreateInfoCount = (uint32_t)queueCreateInfos.size;
-        createInfo.pEnabledFeatures = &deviceFeatures;
-
-        createInfo.enabledExtensionCount = (uint32_t)requiredDeviceExtensionsArray.size;
-        createInfo.ppEnabledExtensionNames = requiredDeviceExtensionsArray.data;
-        // TODO don't do this in release mode
-        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
-        createInfo.ppEnabledLayerNames = requiredLayers;
-
-        if (vkCreateDevice(state->physicalDevice, &createInfo, nullptr, &state->device) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDevice failed\n");
-            return false;
-        }
-
-        vkGetDeviceQueue(state->device, queueFamilyInfo.graphicsFamilyIndex, 0, &state->graphicsQueue);
-        vkGetDeviceQueue(state->device, queueFamilyInfo.presentFamilyIndex, 0, &state->presentQueue);
-    }
-
     // Create swapchain
     {
         SwapchainSupportInfo swapchainSupportInfo;
@@ -443,7 +225,7 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
 
         const VkSurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapchainSupportInfo.formats.ToArray());
         const VkPresentModeKHR presentMode = ChooseSwapPresentMode(swapchainSupportInfo.presentModes.ToArray());
-        const VkExtent2D extent = ChooseSwapExtent(swapchainSupportInfo.capabilities, windowSize);
+        const VkExtent2D extent = ChooseSwapExtent(swapchainSupportInfo.capabilities, size);
 
         uint32_t imageCount = swapchainSupportInfo.capabilities.minImageCount + 1;
         if (swapchainSupportInfo.capabilities.maxImageCount > 0 &&
@@ -488,7 +270,6 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
 
         state->swapchainImageFormat = surfaceFormat.format;
         state->swapchainExtent = extent;
-
         vkGetSwapchainImagesKHR(state->device, state->swapchain, &imageCount, nullptr);
         if (imageCount > VulkanState::MAX_SWAPCHAIN_IMAGES) {
             LOG_ERROR("Too many swapchain images: %lu\n", imageCount);
@@ -796,13 +577,14 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
                 return false;
             }
 
+            const VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+
             VkRenderPassBeginInfo renderPassInfo = {};
             renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
             renderPassInfo.renderPass = state->renderPass;
             renderPassInfo.framebuffer = state->swapchainFramebuffers[i];
             renderPassInfo.renderArea.offset = { 0, 0 };
             renderPassInfo.renderArea.extent = state->swapchainExtent;
-            VkClearValue clearColor = { 0.0f, 0.0f, 0.1f, 1.0f };
             renderPassInfo.clearValueCount = 1;
             renderPassInfo.pClearValues = &clearColor;
 
@@ -818,6 +600,228 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
                 return false;
             }
         }
+    }
+
+    return true;
+}
+
+bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator)
+{
+    // Verify required layers
+    const char* requiredLayers[] = {
+        "VK_LAYER_KHRONOS_validation",
+    };
+    {
+        uint32_t count;
+        if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+            return false;
+        }
+
+        DynamicArray<VkLayerProperties, LinearAllocator> layers(count, allocator);
+        layers.size = count;
+        if (vkEnumerateInstanceLayerProperties(&count, layers.data) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+            return false;
+        }
+
+        for (int i = 0; i < C_ARRAY_LENGTH(requiredLayers); i++) {
+            const_string requiredLayer = ToString(requiredLayers[i]);
+
+            bool found = false;
+            for (uint64 j = 0; j < layers.size; j++) {
+                const_string layerName = ToString(layers[j].layerName);
+                if (StringEquals(requiredLayer, layerName)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                LOG_ERROR("Required Vulkan instance layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
+                return false;
+            }
+        }
+    }
+
+    // Verify required extensions
+    const char* requiredExtensions[] = {
+        "VK_KHR_surface",
+        "VK_KHR_win32_surface",
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+    };
+    {
+        uint32_t count;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+            return false;
+        }
+
+        DynamicArray<VkExtensionProperties, LinearAllocator> extensions(count, allocator);
+        extensions.size = count;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+            return false;
+        }
+
+        for (int i = 0; i < C_ARRAY_LENGTH(requiredExtensions); i++) {
+            const_string requiredExtension = ToString(requiredExtensions[i]);
+
+            bool found = false;
+            for (uint64 j = 0; j < extensions.size; j++) {
+                const_string extensionName = ToString(extensions[j].extensionName);
+                if (StringEquals(requiredExtension, extensionName)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                LOG_ERROR("Required Vulkan instance extension not found: %.*s\n",
+                          (int)requiredExtension.size, requiredExtension.data);
+            }
+        }
+    }
+
+    // Create VkInstance
+    {
+        VkApplicationInfo appInfo = {};
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        appInfo.pApplicationName = "vulkan";
+        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.pEngineName = "km3d";
+        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.apiVersion = VK_API_VERSION_1_0;
+
+        VkInstanceCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        createInfo.pApplicationInfo = &appInfo;
+        // TODO don't do this in release mode
+        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
+        createInfo.ppEnabledLayerNames = requiredLayers;
+        createInfo.enabledExtensionCount = C_ARRAY_LENGTH(requiredExtensions);
+        createInfo.ppEnabledExtensionNames = requiredExtensions;
+
+        if (vkCreateInstance(&createInfo, nullptr, &state->instance) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateInstance failed\n");
+            return false;
+        }
+    }
+
+    // Set up debug messenger
+    {
+        VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        createInfo.pfnUserCallback = VulkanDebugCallback;
+        createInfo.pUserData = nullptr;
+
+        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkCreateDebugUtilsMessengerEXT");
+        if (vkCreateDebugUtilsMessengerEXT == nullptr) {
+            LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
+            return false;
+        }
+
+        if (vkCreateDebugUtilsMessengerEXT(state->instance, &createInfo, nullptr, &state->debugMessenger) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
+            return false;
+        }
+    }
+
+    // Create window surface
+    {
+        VkWin32SurfaceCreateInfoKHR createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+        createInfo.hwnd = hWnd;
+        createInfo.hinstance = hInstance;
+
+        if (vkCreateWin32SurfaceKHR(state->instance, &createInfo, nullptr, &state->surface) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateWin32SurfaceKHR failed\n");
+            return false;
+        }
+    }
+
+    // Select physical device
+    {
+        const char* requiredDeviceExtensions[] = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        };
+        Array<const char*> requiredDeviceExtensionsArray = {
+            .size = C_ARRAY_LENGTH(requiredDeviceExtensions),
+            .data = requiredDeviceExtensions
+        };
+
+        uint32_t deviceCount = 0;
+        vkEnumeratePhysicalDevices(state->instance, &deviceCount, nullptr);
+        if (deviceCount == 0) {
+            LOG_ERROR("vkEnumeratePhysicalDevices returned 0 devices - no GPUs with Vulkan support\n");
+            return false;
+        }
+
+        DynamicArray<VkPhysicalDevice, LinearAllocator> devices(deviceCount, allocator);
+        devices.size = deviceCount;
+        vkEnumeratePhysicalDevices(state->instance, &deviceCount, devices.data);
+
+        state->physicalDevice = VK_NULL_HANDLE;
+        for (uint64 i = 0; i < devices.size; i++) {
+            if (IsPhysicalDeviceSuitable(state->surface, devices[i], requiredDeviceExtensionsArray, allocator)) {
+                state->physicalDevice = devices[i];
+                break;
+            }
+        }
+
+        if (state->physicalDevice == VK_NULL_HANDLE) {
+            LOG_ERROR("Failed to find a suitable GPU for Vulkan\n");
+            return false;
+        }
+
+        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(state->surface, state->physicalDevice, allocator);
+        uint32_t queueFamilyIndices[] = {
+            queueFamilyInfo.graphicsFamilyIndex,
+            queueFamilyInfo.presentFamilyIndex
+        };
+
+        DynamicArray<VkDeviceQueueCreateInfo, LinearAllocator> queueCreateInfos(allocator);
+        float32 queuePriority = 1.0f;
+        for (int i = 0; i < C_ARRAY_LENGTH(queueFamilyIndices); i++) {
+            bool repeatIndex = false;
+            for (int j = 0; j < i; j++) {
+                if (queueFamilyIndices[i] == queueFamilyIndices[j]) {
+                    repeatIndex = true;
+                    break;
+                }
+            }
+            if (repeatIndex) {
+                continue;
+            }
+
+            VkDeviceQueueCreateInfo* queueCreateInfo = queueCreateInfos.Append();
+            queueCreateInfo->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo->queueFamilyIndex = queueFamilyIndices[i];
+            queueCreateInfo->queueCount = 1;
+            queueCreateInfo->pQueuePriorities = &queuePriority;
+        }
+
+        VkPhysicalDeviceFeatures deviceFeatures = {};
+
+        VkDeviceCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.pQueueCreateInfos = queueCreateInfos.data;
+        createInfo.queueCreateInfoCount = (uint32_t)queueCreateInfos.size;
+        createInfo.pEnabledFeatures = &deviceFeatures;
+
+        createInfo.enabledExtensionCount = (uint32_t)requiredDeviceExtensionsArray.size;
+        createInfo.ppEnabledExtensionNames = requiredDeviceExtensionsArray.data;
+        // TODO don't do this in release mode
+        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
+        createInfo.ppEnabledLayerNames = requiredLayers;
+
+        if (vkCreateDevice(state->physicalDevice, &createInfo, nullptr, &state->device) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDevice failed\n");
+            return false;
+        }
+
+        vkGetDeviceQueue(state->device, queueFamilyInfo.graphicsFamilyIndex, 0, &state->graphicsQueue);
+        vkGetDeviceQueue(state->device, queueFamilyInfo.presentFamilyIndex, 0, &state->presentQueue);
     }
 
     // Create semaphores
@@ -837,18 +841,11 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
         }
     }
 
-    return true;
+    return RecreateVulkanSwapchain(state, size, allocator);
 }
 
-void UnloadVulkanState(VulkanState* state)
+void UnloadVulkanSwapchain(VulkanState* state)
 {
-    auto vkDestroyDebugUtilsMessengerEXT = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkDestroyDebugUtilsMessengerEXT");
-    if (vkDestroyDebugUtilsMessengerEXT == nullptr) {
-        LOG_ERROR("vkGetInstanceProcAddr failed for vkDestroyDebugUtilsMessengerEXT\n");
-    }
-
-    vkDestroySemaphore(state->device, state->renderFinishedSemaphore, nullptr);
-    vkDestroySemaphore(state->device, state->imageAvailableSemaphore, nullptr);
     vkDestroyCommandPool(state->device, state->commandPool, nullptr);
     for (uint64 i = 0; i < state->swapchainFramebuffers.size; i++) {
         vkDestroyFramebuffer(state->device, state->swapchainFramebuffers[i], nullptr);
@@ -860,10 +857,80 @@ void UnloadVulkanState(VulkanState* state)
         vkDestroyImageView(state->device, state->swapchainImageViews[i], nullptr);
     }
     vkDestroySwapchainKHR(state->device, state->swapchain, nullptr);
+}
+
+void UnloadVulkanState(VulkanState* state)
+{
+    UnloadVulkanSwapchain(state);
+
+    auto vkDestroyDebugUtilsMessengerEXT = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (vkDestroyDebugUtilsMessengerEXT == nullptr) {
+        LOG_ERROR("vkGetInstanceProcAddr failed for vkDestroyDebugUtilsMessengerEXT\n");
+    }
+
+    vkDestroySemaphore(state->device, state->renderFinishedSemaphore, nullptr);
+    vkDestroySemaphore(state->device, state->imageAvailableSemaphore, nullptr);
     vkDestroyDevice(state->device, nullptr);
     vkDestroySurfaceKHR(state->instance, state->surface, nullptr);
     vkDestroyDebugUtilsMessengerEXT(state->instance, state->debugMessenger, nullptr);
     vkDestroyInstance(state->instance, nullptr);
+}
+
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT result = 0;
+
+    switch (message) {
+        case WM_ACTIVATEAPP: {
+            // TODO handle
+        } break;
+        case WM_CLOSE: {
+            // TODO handle this with a message?
+            running_ = false;
+        } break;
+        case WM_DESTROY: {
+            // TODO handle this as an error?
+            running_ = false;
+        } break;
+
+#if 0
+        case WM_SIZE: {
+            int width = LOWORD(lParam);
+            int height = HIWORD(lParam);
+            if (glViewport_) {
+                glViewport_(0, 0, width, height);
+            }
+            if (screenInfo_) {
+                screenInfo_->size.x = width;
+                screenInfo_->size.y = height;
+                screenInfo_->changed = true;
+            }
+        } break;
+
+        case WM_SYSKEYDOWN: {
+            // DEBUG_PANIC("WM_SYSKEYDOWN in WndProc");
+        } break;
+        case WM_SYSKEYUP: {
+            // DEBUG_PANIC("WM_SYSKEYUP in WndProc");
+        } break;
+        case WM_KEYDOWN: {
+        } break;
+        case WM_KEYUP: {
+        } break;
+
+        case WM_CHAR: {
+            char c = (char)wParam;
+            input_->keyboardString[input_->keyboardStringLen++] = c;
+            input_->keyboardString[input_->keyboardStringLen] = '\0';
+        } break;
+#endif
+
+        default: {
+            result = DefWindowProc(hWnd, message, wParam, lParam);
+        } break;
+    }
+
+    return result;
 }
 
 internal void Win32ProcessMessages(HWND hWnd)
@@ -979,63 +1046,6 @@ internal void Win32ProcessMessages(HWND hWnd)
     }
 }
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    LRESULT result = 0;
-
-    switch (message) {
-        case WM_ACTIVATEAPP: {
-            // TODO handle
-        } break;
-        case WM_CLOSE: {
-            // TODO handle this with a message?
-            running_ = false;
-        } break;
-        case WM_DESTROY: {
-            // TODO handle this as an error?
-            running_ = false;
-        } break;
-
-#if 0
-        case WM_SIZE: {
-            int width = LOWORD(lParam);
-            int height = HIWORD(lParam);
-            if (glViewport_) {
-                glViewport_(0, 0, width, height);
-            }
-            if (screenInfo_) {
-                screenInfo_->size.x = width;
-                screenInfo_->size.y = height;
-                screenInfo_->changed = true;
-            }
-        } break;
-
-        case WM_SYSKEYDOWN: {
-            // DEBUG_PANIC("WM_SYSKEYDOWN in WndProc");
-        } break;
-        case WM_SYSKEYUP: {
-            // DEBUG_PANIC("WM_SYSKEYUP in WndProc");
-        } break;
-        case WM_KEYDOWN: {
-        } break;
-        case WM_KEYUP: {
-        } break;
-
-        case WM_CHAR: {
-            char c = (char)wParam;
-            input_->keyboardString[input_->keyboardStringLen++] = c;
-            input_->keyboardString[input_->keyboardStringLen] = '\0';
-        } break;
-#endif
-
-        default: {
-            result = DefWindowProc(hWnd, message, wParam, lParam);
-        } break;
-    }
-
-    return result;
-}
-
 HWND Win32CreateWindow(HINSTANCE hInstance, WNDPROC wndProc, const char* className, const char* windowName,
                        int x, int y, int clientWidth, int clientHeight)
 {
@@ -1118,32 +1128,68 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     Vec2Int windowSize = { WINDOW_START_WIDTH, WINDOW_START_HEIGHT };
     VulkanState vulkanState;
-    LinearAllocator tempAllocator(transientMemory);
-    if (!LoadVulkanState(&vulkanState, hInstance, hWnd, windowSize, &tempAllocator)) {
-        LOG_ERROR("LoadVulkanState failed\n");
-        LOG_FLUSH();
-        return 1;
+    {
+        LinearAllocator tempAllocator(transientMemory);
+        if (!LoadVulkanState(&vulkanState, hInstance, hWnd, windowSize, &tempAllocator)) {
+            LOG_ERROR("LoadVulkanState failed\n");
+            LOG_FLUSH();
+            return 1;
+        }
     }
     defer(UnloadVulkanState(&vulkanState));
+    LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchainImages.size);
+
+    // Initialize timing information
+    int64 timerFreq;
+    LARGE_INTEGER timerLast;
+    uint64 cyclesLast;
+    {
+        LARGE_INTEGER timerFreqResult;
+        QueryPerformanceFrequency(&timerFreqResult);
+        timerFreq = timerFreqResult.QuadPart;
+
+        QueryPerformanceCounter(&timerLast);
+        cyclesLast = __rdtsc();
+    }
 
     running_ = true;
     while (running_) {
         Win32ProcessMessages(hWnd);
 
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(vulkanState.device, vulkanState.swapchain, UINT64_MAX, vulkanState.imageAvailableSemaphore,
-                              VK_NULL_HANDLE, &imageIndex);
+        VkResult result = vkAcquireNextImageKHR(vulkanState.device, vulkanState.swapchain, UINT64_MAX,
+                                                vulkanState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            RECT clientRect;
+            if (GetClientRect(hWnd, &clientRect)) {
+                Vec2Int size = { clientRect.right, clientRect.bottom };
+                LinearAllocator tempAllocator(transientMemory);
+
+                vkDeviceWaitIdle(vulkanState.device);
+                UnloadVulkanSwapchain(&vulkanState);
+                RecreateVulkanSwapchain(&vulkanState, size, &tempAllocator);
+                continue;
+            }
+            else {
+                LOG_ERROR("GetClientRect failed before swapchain recreation\n");
+            }
+        }
+        else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+            LOG_ERROR("Failed to acquire swapchain image\n");
+        }
+
+        const VkSemaphore waitSemaphores[] = { vulkanState.imageAvailableSemaphore };
+        const VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
+        const VkSemaphore signalSemaphores[] = { vulkanState.renderFinishedSemaphore };
 
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        const VkSemaphore waitSemaphores[] = { vulkanState.imageAvailableSemaphore };
-        const VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
         submitInfo.waitSemaphoreCount = C_ARRAY_LENGTH(waitSemaphores);
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &vulkanState.commandBuffers[(uint64)imageIndex];
-        const VkSemaphore signalSemaphores[] = { vulkanState.renderFinishedSemaphore };
         submitInfo.signalSemaphoreCount = C_ARRAY_LENGTH(signalSemaphores);
         submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -1162,7 +1208,24 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
         vkQueuePresentKHR(vulkanState.presentQueue, &presentInfo);
 
+        vkQueueWaitIdle(vulkanState.graphicsQueue);
         vkQueueWaitIdle(vulkanState.presentQueue);
+
+        // timing information
+        {
+            LARGE_INTEGER timerEnd;
+            QueryPerformanceCounter(&timerEnd);
+            uint64 cyclesEnd = __rdtsc();
+
+            int64 timerElapsed = timerEnd.QuadPart - timerLast.QuadPart;
+            float64 elapsedMs = (float64)timerElapsed / timerFreq * 1000.0f;
+            int64 cyclesElapsed = cyclesEnd - cyclesLast;
+            float64 megaCyclesElapsed = (float64)cyclesElapsed / 1000000.0f;
+            LOG_INFO("elapsed %.03f ms | %.03f MC\n", elapsedMs, megaCyclesElapsed);
+
+            timerLast = timerEnd;
+            cyclesLast = cyclesEnd;
+        }
     }
 
     vkDeviceWaitIdle(vulkanState.device);

@@ -5,7 +5,7 @@
 #include <km_common/km_lib.h>
 
 #define LOG_ERROR(format, ...) fprintf(stderr, format, ##__VA_ARGS__)
-#define LOG_INFO(format, ...)  fprintf(stdout, format, ##__VA_ARGS__)
+#define LOG_INFO(format, ...)  fprintf(stderr, format, ##__VA_ARGS__)
 #define LOG_FLUSH() fflush(stderr); fflush(stdout)
 
 const int WINDOW_START_WIDTH  = 1600;
