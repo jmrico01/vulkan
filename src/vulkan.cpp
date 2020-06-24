@@ -10,6 +10,7 @@ struct Vertex
 {
     Vec2 pos;
     Vec3 color;
+    Vec2 uv;
 
     static VkVertexInputBindingDescription GetBindingDescription()
     {
@@ -21,10 +22,10 @@ struct Vertex
         return bindingDescription;
     }
 
-    static FixedArray<VkVertexInputAttributeDescription, 2> GetAttributeDescriptions()
+    static FixedArray<VkVertexInputAttributeDescription, 3> GetAttributeDescriptions()
     {
-        FixedArray<VkVertexInputAttributeDescription, 2> attributeDescriptions;
-        attributeDescriptions.size = 2;
+        FixedArray<VkVertexInputAttributeDescription, 3> attributeDescriptions;
+        attributeDescriptions.size = 3;
 
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
@@ -35,6 +36,11 @@ struct Vertex
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(Vertex, uv);
 
         return attributeDescriptions;
     }
@@ -48,16 +54,16 @@ struct UniformBufferObject
 };
 
 const Vertex VERTICES_TRIANGLE[] = {
-    { {  0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-    { {  0.5f,  0.5f }, { 0.0f, 1.0f, 0.0f } },
-    { { -0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f } },
+    { {  0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+    { {  0.5f,  0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    { { -0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
 };
 
 const Vertex VERTICES_UNIT_RECT[] = {
-    { { 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
-    { { 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f } },
-    { { 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },
-    { { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f } },
+    { { 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+    { { 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    { { 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
 };
 
 const uint16_t INDICES_UNIT_RECT[] = {
@@ -600,10 +606,19 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         uboLayoutBinding.pImmutableSamplers = nullptr;
 
+        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+        samplerLayoutBinding.binding = 1;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        const VkDescriptorSetLayoutBinding bindings[] = { uboLayoutBinding, samplerLayoutBinding };
+
         VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
         layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutCreateInfo.bindingCount = 1;
-        layoutCreateInfo.pBindings = &uboLayoutBinding;
+        layoutCreateInfo.bindingCount = C_ARRAY_LENGTH(bindings);
+        layoutCreateInfo.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(state->device, &layoutCreateInfo, nullptr,
                                         &state->descriptorSetLayout) != VK_SUCCESS) {
@@ -1003,14 +1018,16 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
     // Create descriptor pool
     {
-        VkDescriptorPoolSize poolSize = {};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = 1;
+        VkDescriptorPoolSize poolSizes[2] = {};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 1;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = 1;
 
         VkDescriptorPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
+        poolInfo.pPoolSizes = poolSizes;
         poolInfo.maxSets = 1;
 
         if (vkCreateDescriptorPool(state->device, &poolInfo, nullptr, &state->descriptorPool) != VK_SUCCESS) {
@@ -1037,18 +1054,29 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(UniformBufferObject);
 
-        VkWriteDescriptorSet descriptorWrite = {};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = state->descriptorSet;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-        descriptorWrite.pImageInfo = nullptr;
-        descriptorWrite.pTexelBufferView = nullptr;
+        VkDescriptorImageInfo imageInfo = {};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = state->textureImageView;
+        imageInfo.sampler = state->textureSampler;
 
-        vkUpdateDescriptorSets(state->device, 1, &descriptorWrite, 0, nullptr);
+        VkWriteDescriptorSet descriptorWrites[2] = {};
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstSet = state->descriptorSet;
+        descriptorWrites[0].dstBinding = 0;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[1].dstSet = state->descriptorSet;
+        descriptorWrites[1].dstBinding = 1;
+        descriptorWrites[1].dstArrayElement = 0;
+        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[1].descriptorCount = 1;
+        descriptorWrites[1].pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(state->device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
     }
 
     // Create command buffers
