@@ -14,6 +14,8 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
+#include "vulkan.cpp"
+
 #if GAME_WIN32
 #include "win32_main.cpp"
 #else
@@ -25,3 +27,7 @@ const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 #include <km_common/km_memory.cpp>
 #include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+#undef STB_IMAGE_IMPLEMENTATION
