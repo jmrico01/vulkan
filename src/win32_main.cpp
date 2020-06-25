@@ -316,8 +316,13 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
         UniformBufferObject ubo;
         ubo.model = Rotate(Vec3 { 0.0f, 0.0f, totalElapsed }) * Translate(Vec3 { -0.5f, -0.5f, 0.0f });
-        ubo.view = Mat4::one;
-        ubo.proj = Mat4::one;
+
+        const Vec3 cameraPos = { 0.0f, 0.1f, -2.0f };
+        const Quat cameraRot = QuatFromEulerAngles(Vec3 { PI_F / 4.0f, 0.0f, 0.0f });
+        ubo.view = Translate(-cameraPos) * UnitQuatToMat4(Inverse(cameraRot));
+
+        const float32 aspect = (float32)vulkanState.swapchainExtent.width / (float32)vulkanState.swapchainExtent.height;
+        ubo.proj = Perspective(PI_F / 4.0f, aspect, 0.1f, 10.0f);
 
         void* data;
         vkMapMemory(vulkanState.device, vulkanState.uniformBufferMemory, 0, sizeof(ubo), 0, &data);

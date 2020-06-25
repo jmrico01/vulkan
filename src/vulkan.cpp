@@ -8,7 +8,7 @@
 
 struct Vertex
 {
-    Vec2 pos;
+    Vec3 pos;
     Vec3 color;
     Vec2 uv;
 
@@ -29,7 +29,7 @@ struct Vertex
 
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[0].offset = offsetof(Vertex, pos);
 
         attributeDescriptions[1].binding = 0;
@@ -60,14 +60,20 @@ const Vertex VERTICES_TRIANGLE[] = {
 };
 
 const Vertex VERTICES_UNIT_RECT[] = {
-    { { 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-    { { 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-    { { 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-    { { 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+    { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+    { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    { { 1.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+
+    { { 0.0f, 0.0f, 0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+    { { 1.0f, 0.0f, 0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    { { 1.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { 0.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
 };
 
 const uint16_t INDICES_UNIT_RECT[] = {
-    0, 1, 2, 2, 3, 0
+    0, 1, 2, 2, 3, 0,
+    4, 5, 6, 6, 7, 4,
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
