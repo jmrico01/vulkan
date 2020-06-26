@@ -53,27 +53,25 @@ struct UniformBufferObject
     alignas(16) Mat4 proj;
 };
 
-const Vertex VERTICES_TRIANGLE[] = {
-    { {  0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-    { {  0.5f,  0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-    { { -0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-};
-
-const Vertex VERTICES_UNIT_RECT[] = {
+const Vertex VERTICES[] = {
     { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
     { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
     { { 1.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
     { { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
 
-    { { 0.0f, 0.0f, 0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-    { { 1.0f, 0.0f, 0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-    { { 1.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-    { { 0.0f, 1.0f, 0.5f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+    { { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
+    { { 1.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+    { { 1.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
 };
 
-const uint16_t INDICES_UNIT_RECT[] = {
+const uint16_t INDICES[] = {
     0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4,
+    3, 2, 6, 6, 7, 3,
+    0, 3, 7, 7, 4, 0,
+    1, 0, 4, 4, 5, 1,
+    2, 1, 5, 5, 6, 2,
+    5, 4, 7, 7, 6, 5,
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -473,6 +471,28 @@ void CopyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue queue
     EndOneTimeCommands(device, commandPool, queue, commandBuffer);
 }
 
+bool CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags,
+                     VkImageView* imageView)
+{
+    VkImageViewCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    createInfo.image = image;
+    createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    createInfo.format = format;
+    createInfo.subresourceRange.aspectMask = aspectFlags;
+    createInfo.subresourceRange.baseMipLevel = 0;
+    createInfo.subresourceRange.levelCount = 1;
+    createInfo.subresourceRange.baseArrayLayer = 0;
+    createInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device, &createInfo, nullptr, imageView) != VK_SUCCESS) {
+        LOG_ERROR("vkCreateImageView failed\n");
+        return false;
+    }
+
+    return true;
+}
+
 bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator)
 {
     // Create swapchain
@@ -537,23 +557,9 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
         state->swapchainImageViews.size = imageCount;
         for (uint64 i = 0; i < state->swapchainImages.size; i++) {
-            VkImageViewCreateInfo imageViewCreateInfo = {};
-            imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            imageViewCreateInfo.image = state->swapchainImages[i];
-            imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            imageViewCreateInfo.format = surfaceFormat.format;
-            imageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            imageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            imageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            imageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-            imageViewCreateInfo.subresourceRange.levelCount = 1;
-            imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-            imageViewCreateInfo.subresourceRange.layerCount = 1;
-            if (vkCreateImageView(state->device, &imageViewCreateInfo, nullptr,
-                                  &state->swapchainImageViews[i]) != VK_SUCCESS) {
-                LOG_ERROR("vkCreateImageView failed for image %llu\n", i);
+            if (!CreateImageView(state->device, state->swapchainImages[i], surfaceFormat.format,
+                                 VK_IMAGE_ASPECT_COLOR_BIT, &state->swapchainImageViews[i])) {
+                LOG_ERROR("CreateImageView failed for image %llu\n", i);
                 return false;
             }
         }
@@ -575,10 +581,25 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         colorAttachmentRef.attachment = 0;
         colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+        VkAttachmentDescription depthAttachment = {};
+        depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference depthAttachmentRef = {};
+        depthAttachmentRef.attachment = 1;
+        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
         VkSubpassDescription subpass = {};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorAttachmentRef;
+        subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
         VkSubpassDependency dependency = {};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -588,10 +609,11 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
+        const VkAttachmentDescription attachments[] = { colorAttachment, depthAttachment };
         VkRenderPassCreateInfo renderPassCreateInfo = {};
         renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassCreateInfo.attachmentCount = 1;
-        renderPassCreateInfo.pAttachments = &colorAttachment;
+        renderPassCreateInfo.attachmentCount = C_ARRAY_LENGTH(attachments);
+        renderPassCreateInfo.pAttachments = attachments;
         renderPassCreateInfo.subpassCount = 1;
         renderPassCreateInfo.pSubpasses = &subpass;
         renderPassCreateInfo.dependencyCount = 1;
@@ -752,6 +774,16 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         colorBlendingCreateInfo.blendConstants[2] = 0.0f;
         colorBlendingCreateInfo.blendConstants[3] = 0.0f;
 
+        VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo = {};
+        depthStencilCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencilCreateInfo.depthTestEnable = VK_TRUE;
+        depthStencilCreateInfo.depthWriteEnable = VK_TRUE;
+        depthStencilCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencilCreateInfo.depthBoundsTestEnable = VK_FALSE;
+        depthStencilCreateInfo.minDepthBounds = 0.0f; // disabled
+        depthStencilCreateInfo.maxDepthBounds = 1.0f; // disabled
+        depthStencilCreateInfo.stencilTestEnable = VK_FALSE;
+
 #if 0
         VkDynamicState dynamicStates[] = {
             VK_DYNAMIC_STATE_VIEWPORT
@@ -784,7 +816,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         pipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
         pipelineCreateInfo.pRasterizationState = &rasterizerCreateInfo;
         pipelineCreateInfo.pMultisampleState = &multisampleCreateInfo;
-        pipelineCreateInfo.pDepthStencilState = nullptr;
+        pipelineCreateInfo.pDepthStencilState = &depthStencilCreateInfo;
         pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
         pipelineCreateInfo.pDynamicState = nullptr;
         pipelineCreateInfo.layout = state->pipelineLayout;
@@ -799,12 +831,31 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         }
     }
 
+    // Create depth resources
+    {
+        if (!CreateImage(state->device, state->physicalDevice,
+                         state->swapchainExtent.width, state->swapchainExtent.height,
+                         VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &state->depthImage, &state->depthImageMemory)) {
+            LOG_ERROR("CreateImage failed\n");
+            return false;
+        }
+
+        if (!CreateImageView(state->device, state->depthImage, VK_FORMAT_D32_SFLOAT,
+                             VK_IMAGE_ASPECT_DEPTH_BIT, &state->depthImageView)) {
+            LOG_ERROR("CreateImageView failed\n");
+            return false;
+        }
+    }
+
     // Create framebuffers
     {
         state->swapchainFramebuffers.size = state->swapchainImageViews.size;
         for (uint64 i = 0; i < state->swapchainFramebuffers.size; i++) {
             VkImageView attachments[] = {
-                state->swapchainImageViews[i]
+                state->swapchainImageViews[i],
+                state->depthImageView
             };
 
             VkFramebufferCreateInfo framebufferCreateInfo = {};
@@ -893,19 +944,9 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
     // Create texture image view
     {
-        VkImageViewCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = state->textureImage;
-        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        createInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = 1;
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = 1;
-
-        if (vkCreateImageView(state->device, &createInfo, nullptr, &state->textureImageView) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateImageView failed\n");
+        if (!CreateImageView(state->device, state->textureImage, VK_FORMAT_R8G8B8A8_SRGB,
+                             VK_IMAGE_ASPECT_COLOR_BIT, &state->textureImageView)) {
+            LOG_ERROR("CreateImageView failed\n");
             return false;
         }
     }
@@ -940,7 +981,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
     // but doesn't really need to be recreated with the swapchain
     {
-        VkDeviceSize vertexBufferSize = sizeof(VERTICES_UNIT_RECT);
+        VkDeviceSize vertexBufferSize = sizeof(VERTICES);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -963,7 +1004,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         // Copy vertex data from CPU into memory-mapped staging buffer
         void* data;
         vkMapMemory(state->device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-        MemCopy(data, VERTICES_UNIT_RECT, vertexBufferSize);
+        MemCopy(data, VERTICES, vertexBufferSize);
         vkUnmapMemory(state->device, stagingBufferMemory);
 
         // Copy vertex data from staging buffer into GPU vertex buffer
@@ -976,7 +1017,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
     // Create index buffer
     {
-        VkDeviceSize indexBufferSize = sizeof(INDICES_UNIT_RECT);
+        VkDeviceSize indexBufferSize = sizeof(INDICES);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -999,7 +1040,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         // Copy data from CPU into memory-mapped staging buffer
         void* data;
         vkMapMemory(state->device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
-        MemCopy(data, INDICES_UNIT_RECT, indexBufferSize);
+        MemCopy(data, INDICES, indexBufferSize);
         vkUnmapMemory(state->device, stagingBufferMemory);
 
         // Copy  data from staging buffer into GPU buffer
@@ -1113,7 +1154,10 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
                 return false;
             }
 
-            const VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+            const VkClearValue clearValues[] = {
+                { 0.0f, 0.0f, 0.0f, 1.0f },
+                { 1.0f, 0 }
+            };
 
             VkRenderPassBeginInfo renderPassInfo = {};
             renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1121,8 +1165,8 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
             renderPassInfo.framebuffer = state->swapchainFramebuffers[i];
             renderPassInfo.renderArea.offset = { 0, 0 };
             renderPassInfo.renderArea.extent = state->swapchainExtent;
-            renderPassInfo.clearValueCount = 1;
-            renderPassInfo.pClearValues = &clearColor;
+            renderPassInfo.clearValueCount = C_ARRAY_LENGTH(clearValues);
+            renderPassInfo.pClearValues = clearValues;
 
             vkCmdBeginRenderPass(buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1136,7 +1180,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
             vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, state->pipelineLayout, 0, 1,
                                     &state->descriptorSet, 0, nullptr);
 
-            vkCmdDrawIndexed(buffer, C_ARRAY_LENGTH(INDICES_UNIT_RECT), 1, 0, 0, 0);
+            vkCmdDrawIndexed(buffer, C_ARRAY_LENGTH(INDICES), 1, 0, 0, 0);
 
             vkCmdEndRenderPass(buffer);
 
@@ -1404,6 +1448,10 @@ void UnloadVulkanSwapchain(VulkanState* state)
     vkDestroyImageView(state->device, state->textureImageView, nullptr);
     vkDestroyImage(state->device, state->textureImage, nullptr);
     vkFreeMemory(state->device, state->textureImageMemory, nullptr);
+
+    vkDestroyImageView(state->device, state->depthImageView, nullptr);
+    vkDestroyImage(state->device, state->depthImage, nullptr);
+    vkFreeMemory(state->device, state->depthImageMemory, nullptr);
 
     vkDestroyCommandPool(state->device, state->commandPool, nullptr);
     for (uint64 i = 0; i < state->swapchainFramebuffers.size; i++) {

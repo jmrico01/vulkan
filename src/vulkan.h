@@ -33,6 +33,13 @@ struct VulkanState
     VkPipeline graphicsPipeline;
     FixedArray<VkFramebuffer, MAX_SWAPCHAIN_IMAGES> swapchainFramebuffers;
 
+    VkCommandPool commandPool;
+    FixedArray<VkCommandBuffer, MAX_SWAPCHAIN_IMAGES> commandBuffers;
+
+    VkImage depthImage;
+    VkDeviceMemory depthImageMemory;
+    VkImageView depthImageView;
+
     VkImage textureImage;
     VkDeviceMemory textureImageMemory;
     VkImageView textureImageView;
@@ -47,9 +54,6 @@ struct VulkanState
 
     VkDescriptorPool descriptorPool;
     VkDescriptorSet descriptorSet;
-
-    VkCommandPool commandPool;
-    FixedArray<VkCommandBuffer, MAX_SWAPCHAIN_IMAGES> commandBuffers;
 
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
