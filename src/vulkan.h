@@ -46,44 +46,18 @@ struct VulkanSwapchain
     FixedArray<VkFramebuffer, MAX_IMAGES> framebuffers;
 };
 
-// Application-specific Vulkan state
-struct VulkanApp
-{
-    VkDescriptorSetLayout descriptorSetLayout;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline graphicsPipeline;
-
-    VkCommandPool commandPool;
-    FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
-
-    VkImage textureImage;
-    VkDeviceMemory textureImageMemory;
-    VkImageView textureImageView;
-    VkSampler textureSampler;
-
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
-
-    VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
-};
-
 struct VulkanState
 {
     VulkanCore core;
     VulkanWindow window;
     VulkanSwapchain swapchain;
-
-    VulkanApp app;
 };
 
-// Reloads VulkanSwapchain and all dependent state
+// Reloads (explicit unload & load) VulkanSwapchain and all dependent state
 bool ReloadVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator);
-// Reloads VulkanWindow and all dependent state
+
+// Reloads (explicit unload & load) VulkanWindow and all dependent state
 bool ReloadVulkanWindow(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
 
 bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
 void UnloadVulkanState(VulkanState* state);
-
