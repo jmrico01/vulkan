@@ -11,8 +11,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
 
     DynamicArray<Vec3, LinearAllocator> vertexPositions(allocator);
     DynamicArray<Vertex, LinearAllocator> vertices(allocator);
-    DynamicArray<int, LinearAllocator> startVertexInds(allocator);
-    int startVertexInd = 0;
+    DynamicArray<uint64, LinearAllocator> modelEndVertexInds(allocator);
 
     string fileString = {
         .size = result->file.size,
@@ -22,7 +21,11 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
     bool firstModel = true;
     while (true) {
         next = NextSplitElement(&fileString, '\n');
-        if (next.size == 0) break;
+        if (next.size == 0) {
+            modelEndVertexInds.Append(vertices.size);
+            break;
+        }
+
         if (next.size < 2) continue;
 
         if (next[0] == 'o' && next[1] == ' ') {
@@ -30,11 +33,10 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
                 firstModel = false;
             }
             else {
-                startVertexInds.Append(startVertexInd);
-                startVertexInd = (int)vertices.size;
+                modelEndVertexInds.Append(vertices.size);
             }
         }
-        if (next[0] == 'v' && next[1] == ' ') {
+        else if (next[0] == 'v' && next[1] == ' ') {
             next.data += 2;
             next.size -= 2;
 
@@ -59,39 +61,30 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
 
             // NOTE obj files store faces in counter-clockwise order, but we want to return clockwise
             if (numElements == 3) {
-                Vertex* v1 = vertices.Append();
-                Vertex* v2 = vertices.Append();
-                Vertex* v3 = vertices.Append();
-                v1->pos = vertexPositions[inds[0] - 1];
-                v2->pos = vertexPositions[inds[2] - 1];
-                v3->pos = vertexPositions[inds[1] - 1];
+                const Vec3 pos1 = vertexPositions[inds[0] - 1];
+                const Vec3 pos2 = vertexPositions[inds[2] - 1];
+                const Vec3 pos3 = vertexPositions[inds[1] - 1];
+                const Vec3 normal = CalculateTriangleUnitNormal(pos1, pos2, pos3);
 
-                const Vec3 normal = CalculateTriangleUnitNormal(v1->pos, v2->pos, v3->pos);
-                v1->normal = normal;
-                v2->normal = normal;
-                v3->normal = normal;
+                vertices.Append({ .pos = pos1, .normal = normal });
+                vertices.Append({ .pos = pos2, .normal = normal });
+                vertices.Append({ .pos = pos3, .normal = normal });
             }
             else if (numElements == 4) {
-                Vertex* v1 = vertices.Append();
-                Vertex* v2 = vertices.Append();
-                Vertex* v3 = vertices.Append();
-                Vertex* v4 = vertices.Append();
-                Vertex* v5 = vertices.Append();
-                Vertex* v6 = vertices.Append();
-                v1->pos = vertexPositions[inds[0] - 1];
-                v2->pos = vertexPositions[inds[3] - 1];
-                v3->pos = vertexPositions[inds[2] - 1];
-                v4->pos = vertexPositions[inds[2] - 1];
-                v5->pos = vertexPositions[inds[1] - 1];
-                v6->pos = vertexPositions[inds[0] - 1];
+                const Vec3 pos1 = vertexPositions[inds[0] - 1];
+                const Vec3 pos2 = vertexPositions[inds[3] - 1];
+                const Vec3 pos3 = vertexPositions[inds[2] - 1];
+                const Vec3 pos4 = vertexPositions[inds[2] - 1];
+                const Vec3 pos5 = vertexPositions[inds[1] - 1];
+                const Vec3 pos6 = vertexPositions[inds[0] - 1];
+                const Vec3 normal = CalculateTriangleUnitNormal(pos1, pos2, pos3);
 
-                const Vec3 normal = CalculateTriangleUnitNormal(v1->pos, v2->pos, v3->pos);
-                v1->normal = normal;
-                v2->normal = normal;
-                v3->normal = normal;
-                v4->normal = normal;
-                v5->normal = normal;
-                v6->normal = normal;
+                vertices.Append({ .pos = pos1, .normal = normal });
+                vertices.Append({ .pos = pos2, .normal = normal });
+                vertices.Append({ .pos = pos3, .normal = normal });
+                vertices.Append({ .pos = pos4, .normal = normal });
+                vertices.Append({ .pos = pos5, .normal = normal });
+                vertices.Append({ .pos = pos6, .normal = normal });
             }
             else {
                 return false;
@@ -100,11 +93,11 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
     }
 
     DynamicArray<ObjModel, LinearAllocator> models(allocator);
-    int prevInd = 0;
-    for (uint64 i = 0; i < startVertexInds.size; i++) {
+    uint64 prevInd = 0;
+    for (uint64 i = 0; i < modelEndVertexInds.size; i++) {
         ObjModel* model = models.Append();
-        model->vertices = vertices.ToArray().Slice(prevInd, startVertexInds[i]);
-        prevInd = startVertexInds[i];
+        model->vertices = vertices.ToArray().Slice(prevInd, modelEndVertexInds[i]);
+        prevInd = modelEndVertexInds[i];
     }
 
     result->models = models.ToArray();

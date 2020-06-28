@@ -1018,7 +1018,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         UniformBufferObject ubo;
         ubo.model = Mat4::one;
 
-        static Vec3 cameraPos = { 0.0f, 4.0f, 0.0f };
+        static Vec3 cameraPos = { -5.0f, 0.0f, 1.0f };
         static Vec2 cameraAngles = { 0.0f, 0.0f };
 
         const float32 cameraSensitivity = 2.0f;
