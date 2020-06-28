@@ -8,32 +8,21 @@
 
 #include "load_obj.h"
 
+const char* REQUIRED_LAYERS[] = {
+    "VK_LAYER_KHRONOS_validation"
+};
+
+const char* REQUIRED_EXTENSIONS[] = {
+    "VK_KHR_surface",
+    "VK_KHR_win32_surface",
+    VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+};
+
 struct UniformBufferObject
 {
     alignas(16) Mat4 model;
     alignas(16) Mat4 view;
     alignas(16) Mat4 proj;
-};
-
-const Vec3 VERTICES[] = {
-    { { 0.0f, 0.0f, 0.0f } },
-    { { 1.0f, 0.0f, 0.0f } },
-    { { 1.0f, 1.0f, 0.0f } },
-    { { 0.0f, 1.0f, 0.0f } },
-
-    { { 0.0f, 0.0f, 1.0f } },
-    { { 1.0f, 0.0f, 1.0f } },
-    { { 1.0f, 1.0f, 1.0f } },
-    { { 0.0f, 1.0f, 1.0f } },
-};
-
-const int INDICES[] = {
-    0, 1, 2, 2, 3, 0,
-    3, 2, 6, 6, 7, 3,
-    0, 3, 7, 7, 4, 0,
-    1, 0, 4, 4, 5, 1,
-    2, 1, 5, 5, 6, 2,
-    5, 4, 7, 7, 6, 5,
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -451,138 +440,9 @@ bool CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAsp
     return true;
 }
 
-bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator)
+bool LoadVulkanApp(const VulkanWindow& window, const VulkanSwapchain& swapchain, VulkanApp* app,
+                   LinearAllocator* allocator)
 {
-    // Create swapchain
-    {
-        SwapchainSupportInfo swapchainSupportInfo;
-        GetSwapchainSupportInfo(state->surface, state->physicalDevice, &swapchainSupportInfo);
-
-        const VkSurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapchainSupportInfo.formats.ToArray());
-        const VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Guaranteed to be available
-        const VkExtent2D extent = ChooseSwapExtent(swapchainSupportInfo.capabilities, size);
-
-        uint32_t imageCount = swapchainSupportInfo.capabilities.minImageCount + 1;
-        if (swapchainSupportInfo.capabilities.maxImageCount > 0 &&
-            imageCount > swapchainSupportInfo.capabilities.maxImageCount) {
-            imageCount = swapchainSupportInfo.capabilities.maxImageCount;
-        }
-
-        VkSwapchainCreateInfoKHR createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        createInfo.surface = state->surface;
-        createInfo.minImageCount = imageCount;
-        createInfo.imageFormat = surfaceFormat.format;
-        createInfo.imageColorSpace = surfaceFormat.colorSpace;
-        createInfo.imageExtent = extent;
-        createInfo.imageArrayLayers = 1;
-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(state->surface, state->physicalDevice, allocator);
-        uint32_t queueFamilyIndices[] = {
-            queueFamilyInfo.graphicsFamilyIndex,
-            queueFamilyInfo.presentFamilyIndex
-        };
-        if (queueFamilyInfo.graphicsFamilyIndex != queueFamilyInfo.presentFamilyIndex) {
-            createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-            createInfo.queueFamilyIndexCount = 2;
-            createInfo.pQueueFamilyIndices = queueFamilyIndices;
-        }
-        else {
-            createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        }
-
-        createInfo.preTransform = swapchainSupportInfo.capabilities.currentTransform;
-        createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        createInfo.presentMode = presentMode;
-        createInfo.clipped = VK_TRUE;
-        createInfo.oldSwapchain = VK_NULL_HANDLE;
-
-        if (vkCreateSwapchainKHR(state->device, &createInfo, nullptr, &state->swapchain) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateSwapchainKHR failed\n");
-            return false;
-        }
-
-        state->swapchainImageFormat = surfaceFormat.format;
-        state->swapchainExtent = extent;
-        vkGetSwapchainImagesKHR(state->device, state->swapchain, &imageCount, nullptr);
-        if (imageCount > VulkanState::MAX_SWAPCHAIN_IMAGES) {
-            LOG_ERROR("Too many swapchain images: %lu\n", imageCount);
-            return false;
-        }
-        state->swapchainImages.size = imageCount;
-        vkGetSwapchainImagesKHR(state->device, state->swapchain, &imageCount, state->swapchainImages.data);
-
-        state->swapchainImageViews.size = imageCount;
-        for (uint64 i = 0; i < state->swapchainImages.size; i++) {
-            if (!CreateImageView(state->device, state->swapchainImages[i], surfaceFormat.format,
-                                 VK_IMAGE_ASPECT_COLOR_BIT, &state->swapchainImageViews[i])) {
-                LOG_ERROR("CreateImageView failed for image %llu\n", i);
-                return false;
-            }
-        }
-    }
-
-    // Create render pass
-    {
-        VkAttachmentDescription colorAttachment = {};
-        colorAttachment.format = state->swapchainImageFormat;
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-        VkAttachmentReference colorAttachmentRef = {};
-        colorAttachmentRef.attachment = 0;
-        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentDescription depthAttachment = {};
-        depthAttachment.format = VK_FORMAT_D32_SFLOAT;
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference depthAttachmentRef = {};
-        depthAttachmentRef.attachment = 1;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkSubpassDescription subpass = {};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorAttachmentRef;
-        subpass.pDepthStencilAttachment = &depthAttachmentRef;
-
-        VkSubpassDependency dependency = {};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.srcAccessMask = 0;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        const VkAttachmentDescription attachments[] = { colorAttachment, depthAttachment };
-        VkRenderPassCreateInfo renderPassCreateInfo = {};
-        renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassCreateInfo.attachmentCount = C_ARRAY_LENGTH(attachments);
-        renderPassCreateInfo.pAttachments = attachments;
-        renderPassCreateInfo.subpassCount = 1;
-        renderPassCreateInfo.pSubpasses = &subpass;
-        renderPassCreateInfo.dependencyCount = 1;
-        renderPassCreateInfo.pDependencies = &dependency;
-
-        if (vkCreateRenderPass(state->device, &renderPassCreateInfo, nullptr, &state->renderPass) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateRenderPass failed\n");
-            return false;
-        }
-    }
-
     // Create descriptor set layout
     {
         VkDescriptorSetLayoutBinding uboLayoutBinding = {};
@@ -606,8 +466,8 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         layoutCreateInfo.bindingCount = C_ARRAY_LENGTH(bindings);
         layoutCreateInfo.pBindings = bindings;
 
-        if (vkCreateDescriptorSetLayout(state->device, &layoutCreateInfo, nullptr,
-                                        &state->descriptorSetLayout) != VK_SUCCESS) {
+        if (vkCreateDescriptorSetLayout(window.device, &layoutCreateInfo, nullptr,
+                                        &app->descriptorSetLayout) != VK_SUCCESS) {
             LOG_ERROR("vkCreateDescriptorSetLayout failed\n");
             return false;
         }
@@ -627,18 +487,18 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         }
 
         VkShaderModule vertShaderModule;
-        if (!CreateShaderModule(vertShaderCode, state->device, &vertShaderModule)) {
+        if (!CreateShaderModule(vertShaderCode, window.device, &vertShaderModule)) {
             LOG_ERROR("Failed to create vertex shader module\n");
             return false;
         }
-        defer(vkDestroyShaderModule(state->device, vertShaderModule, nullptr));
+        defer(vkDestroyShaderModule(window.device, vertShaderModule, nullptr));
 
         VkShaderModule fragShaderModule;
-        if (!CreateShaderModule(fragShaderCode, state->device, &fragShaderModule)) {
+        if (!CreateShaderModule(fragShaderCode, window.device, &fragShaderModule)) {
             LOG_ERROR("Failed to create fragment shader module\n");
             return false;
         }
-        defer(vkDestroyShaderModule(state->device, fragShaderModule, nullptr));
+        defer(vkDestroyShaderModule(window.device, fragShaderModule, nullptr));
 
         VkPipelineShaderStageCreateInfo vertShaderStageCreateInfo = {};
         vertShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -657,21 +517,26 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
         VkVertexInputBindingDescription bindingDescription = {};
         bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vec3);
+        bindingDescription.stride = sizeof(Vertex);
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        VkVertexInputAttributeDescription attributeDescription = {};
-        attributeDescription.binding = 0;
-        attributeDescription.location = 0;
-        attributeDescription.offset = 0;
-        attributeDescription.format = VK_FORMAT_R32G32B32_SFLOAT;
+        VkVertexInputAttributeDescription attributeDescriptions[2] = {};
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, normal);
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
         vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         vertexInputCreateInfo.vertexBindingDescriptionCount = 1;
         vertexInputCreateInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputCreateInfo.vertexAttributeDescriptionCount = 1;
-        vertexInputCreateInfo.pVertexAttributeDescriptions = &attributeDescription;
+        vertexInputCreateInfo.vertexAttributeDescriptionCount = C_ARRAY_LENGTH(attributeDescriptions);
+        vertexInputCreateInfo.pVertexAttributeDescriptions = attributeDescriptions;
 
         VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {};
         inputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -681,14 +546,14 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         VkViewport viewport = {};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = (float32)state->swapchainExtent.width;
-        viewport.height = (float32)state->swapchainExtent.height;
+        viewport.width = (float32)swapchain.extent.width;
+        viewport.height = (float32)swapchain.extent.height;
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
 
         VkRect2D scissor = {};
         scissor.offset = { 0, 0 };
-        scissor.extent = state->swapchainExtent;
+        scissor.extent = swapchain.extent;
 
         VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {};
         viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -764,11 +629,12 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
         pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutCreateInfo.setLayoutCount = 1;
-        pipelineLayoutCreateInfo.pSetLayouts = &state->descriptorSetLayout;
+        pipelineLayoutCreateInfo.pSetLayouts = &app->descriptorSetLayout;
         pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
         pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
 
-        if (vkCreatePipelineLayout(state->device, &pipelineLayoutCreateInfo, nullptr, &state->pipelineLayout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(window.device, &pipelineLayoutCreateInfo, nullptr,
+                                   &app->pipelineLayout) != VK_SUCCESS) {
             LOG_ERROR("vkCreatePipelineLayout failed\n");
             return false;
         }
@@ -785,72 +651,28 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         pipelineCreateInfo.pDepthStencilState = &depthStencilCreateInfo;
         pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
         pipelineCreateInfo.pDynamicState = nullptr;
-        pipelineCreateInfo.layout = state->pipelineLayout;
-        pipelineCreateInfo.renderPass = state->renderPass;
+        pipelineCreateInfo.layout = app->pipelineLayout;
+        pipelineCreateInfo.renderPass = swapchain.renderPass;
         pipelineCreateInfo.subpass = 0;
         pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
         pipelineCreateInfo.basePipelineIndex = -1;
 
-        if (vkCreateGraphicsPipelines(state->device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &state->graphicsPipeline) != VK_SUCCESS) {
+        if (vkCreateGraphicsPipelines(window.device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &app->graphicsPipeline) != VK_SUCCESS) {
             LOG_ERROR("vkCreateGraphicsPipeline failed\n");
             return false;
         }
     }
 
-    // Create depth resources
-    {
-        if (!CreateImage(state->device, state->physicalDevice,
-                         state->swapchainExtent.width, state->swapchainExtent.height,
-                         VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
-                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &state->depthImage, &state->depthImageMemory)) {
-            LOG_ERROR("CreateImage failed\n");
-            return false;
-        }
-
-        if (!CreateImageView(state->device, state->depthImage, VK_FORMAT_D32_SFLOAT,
-                             VK_IMAGE_ASPECT_DEPTH_BIT, &state->depthImageView)) {
-            LOG_ERROR("CreateImageView failed\n");
-            return false;
-        }
-    }
-
-    // Create framebuffers
-    {
-        state->swapchainFramebuffers.size = state->swapchainImageViews.size;
-        for (uint64 i = 0; i < state->swapchainFramebuffers.size; i++) {
-            VkImageView attachments[] = {
-                state->swapchainImageViews[i],
-                state->depthImageView
-            };
-
-            VkFramebufferCreateInfo framebufferCreateInfo = {};
-            framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            framebufferCreateInfo.renderPass = state->renderPass;
-            framebufferCreateInfo.attachmentCount = C_ARRAY_LENGTH(attachments);
-            framebufferCreateInfo.pAttachments = attachments;
-            framebufferCreateInfo.width = state->swapchainExtent.width;
-            framebufferCreateInfo.height = state->swapchainExtent.height;
-            framebufferCreateInfo.layers = 1;
-
-            if (vkCreateFramebuffer(state->device, &framebufferCreateInfo, nullptr,
-                                    &state->swapchainFramebuffers[i]) != VK_SUCCESS) {
-                LOG_ERROR("vkCreateFramebuffer failed for framebuffer %llu\n", i);
-                return false;
-            }
-        }
-    }
-
     // Create command pool
     {
-        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(state->surface, state->physicalDevice, allocator);
+        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(window.surface, window.physicalDevice, allocator);
 
         VkCommandPoolCreateInfo poolCreateInfo = {};
         poolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolCreateInfo.queueFamilyIndex = queueFamilyInfo.graphicsFamilyIndex;
         poolCreateInfo.flags = 0;
 
-        if (vkCreateCommandPool(state->device, &poolCreateInfo, nullptr, &state->commandPool) != VK_SUCCESS) {
+        if (vkCreateCommandPool(window.device, &poolCreateInfo, nullptr, &app->commandPool) != VK_SUCCESS) {
             LOG_ERROR("vkCreateCommandPool failed\n");
             return false;
         }
@@ -872,36 +694,36 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         if (!CreateBuffer(imageSize,
                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          state->device, state->physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
             LOG_ERROR("CreateBuffer failed for staging buffer\n");
             return false;
         }
         defer({
-                  vkDestroyBuffer(state->device, stagingBuffer, nullptr);
-                  vkFreeMemory(state->device, stagingBufferMemory, nullptr);
+                  vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+                  vkFreeMemory(window.device, stagingBufferMemory, nullptr);
               });
 
         void* data;
-        vkMapMemory(state->device, stagingBufferMemory, 0, imageSize, 0, &data);
+        vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
         MemCopy(data, imageData, imageSize);
-        vkUnmapMemory(state->device, stagingBufferMemory);
+        vkUnmapMemory(window.device, stagingBufferMemory);
 
-        if (!CreateImage(state->device, state->physicalDevice, width, height,
+        if (!CreateImage(window.device, window.physicalDevice, width, height,
                          VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                         &state->textureImage, &state->textureImageMemory)) {
+                         &app->textureImage, &app->textureImageMemory)) {
             LOG_ERROR("CreateImage failed\n");
             return false;
         }
 
-        TransitionImageLayout(state->device, state->commandPool, state->graphicsQueue, state->textureImage,
+        TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
                               VK_FORMAT_R8G8B8A8_SRGB,
                               VK_IMAGE_LAYOUT_UNDEFINED,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        CopyBufferToImage(state->device, state->commandPool, state->graphicsQueue,
-                          stagingBuffer, state->textureImage, width, height);
-        TransitionImageLayout(state->device, state->commandPool, state->graphicsQueue, state->textureImage,
+        CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
+                          stagingBuffer, app->textureImage, width, height);
+        TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
                               VK_FORMAT_R8G8B8A8_SRGB,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -910,8 +732,8 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
     // Create texture image view
     {
-        if (!CreateImageView(state->device, state->textureImage, VK_FORMAT_R8G8B8A8_SRGB,
-                             VK_IMAGE_ASPECT_COLOR_BIT, &state->textureImageView)) {
+        if (!CreateImageView(window.device, app->textureImage, VK_FORMAT_R8G8B8A8_SRGB,
+                             VK_IMAGE_ASPECT_COLOR_BIT, &app->textureImageView)) {
             LOG_ERROR("CreateImageView failed\n");
             return false;
         }
@@ -937,7 +759,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         createInfo.minLod = 0.0f;
         createInfo.maxLod = 0.0f;
 
-        if (vkCreateSampler(state->device, &createInfo, nullptr, &state->textureSampler) != VK_SUCCESS) {
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->textureSampler) != VK_SUCCESS) {
             LOG_ERROR("vkCreateSampler failed\n");
             return false;
         }
@@ -948,20 +770,23 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         LOG_ERROR("Failed to load reference scene .obj\n");
         return false;
     }
-    FreeObj(obj, allocator);
+    uint32_t totalVertices = 0;
+    for (uint64 i = 0; i < obj.models.size; i++) {
+        totalVertices += (uint32_t)obj.models[i].vertices.size;
+    }
 
     // Create vertex buffer
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
     // but doesn't really need to be recreated with the swapchain
     {
-        VkDeviceSize vertexBufferSize = obj.models[0].vertices.size * sizeof(Vec3);
+        VkDeviceSize vertexBufferSize = totalVertices * sizeof(Vertex);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
         if (!CreateBuffer(vertexBufferSize,
                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          state->device, state->physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
             LOG_ERROR("CreateBuffer failed for staging buffer\n");
             return false;
         }
@@ -969,59 +794,28 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         if (!CreateBuffer(vertexBufferSize,
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                          state->device, state->physicalDevice, &state->vertexBuffer, &state->vertexBufferMemory)) {
+                          window.device, window.physicalDevice, &app->vertexBuffer, &app->vertexBufferMemory)) {
             LOG_ERROR("CreateBuffer failed for vertex buffer\n");
             return false;
         }
 
         // Copy vertex data from CPU into memory-mapped staging buffer
         void* data;
-        vkMapMemory(state->device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-        MemCopy(data, obj.models[9].vertices.data, vertexBufferSize);
-        vkUnmapMemory(state->device, stagingBufferMemory);
+        vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
+        uint64 offset = 0;
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            const uint64 numBytes = obj.models[i].vertices.size * sizeof(Vertex);
+            MemCopy((char*)data + offset, obj.models[i].vertices.data, numBytes);
+            offset += numBytes;
+        }
+        vkUnmapMemory(window.device, stagingBufferMemory);
 
         // Copy vertex data from staging buffer into GPU vertex buffer
-        CopyBuffer(state->device, state->commandPool, state->graphicsQueue,
-                   stagingBuffer, state->vertexBuffer, vertexBufferSize);
+        CopyBuffer(window.device, app->commandPool, window.graphicsQueue,
+                   stagingBuffer, app->vertexBuffer, vertexBufferSize);
 
-        vkDestroyBuffer(state->device, stagingBuffer, nullptr);
-        vkFreeMemory(state->device, stagingBufferMemory, nullptr);
-    }
-
-    // Create index buffer
-    {
-        VkDeviceSize indexBufferSize = obj.models[0].indices.size * sizeof(int);
-
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingBufferMemory;
-        if (!CreateBuffer(indexBufferSize,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          state->device, state->physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for staging buffer\n");
-            return false;
-        }
-
-        if (!CreateBuffer(indexBufferSize,
-                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                          state->device, state->physicalDevice, &state->indexBuffer, &state->indexBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for index buffer\n");
-            return false;
-        }
-
-        // Copy data from CPU into memory-mapped staging buffer
-        void* data;
-        vkMapMemory(state->device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
-        MemCopy(data, obj.models[0].indices.data, indexBufferSize);
-        vkUnmapMemory(state->device, stagingBufferMemory);
-
-        // Copy  data from staging buffer into GPU buffer
-        CopyBuffer(state->device, state->commandPool, state->graphicsQueue,
-                   stagingBuffer, state->indexBuffer, indexBufferSize);
-
-        vkDestroyBuffer(state->device, stagingBuffer, nullptr);
-        vkFreeMemory(state->device, stagingBufferMemory, nullptr);
+        vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+        vkFreeMemory(window.device, stagingBufferMemory, nullptr);
     }
 
     // Create uniform buffer
@@ -1030,7 +824,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         if (!CreateBuffer(uniformBufferSize,
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          state->device, state->physicalDevice, &state->uniformBuffer, &state->uniformBufferMemory)) {
+                          window.device, window.physicalDevice, &app->uniformBuffer, &app->uniformBufferMemory)) {
             LOG_ERROR("CreateBuffer failed for uniform buffer\n");
             return false;
         }
@@ -1050,7 +844,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         poolInfo.pPoolSizes = poolSizes;
         poolInfo.maxSets = 1;
 
-        if (vkCreateDescriptorPool(state->device, &poolInfo, nullptr, &state->descriptorPool) != VK_SUCCESS) {
+        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->descriptorPool) != VK_SUCCESS) {
             LOG_ERROR("vkCreateDescriptorPool failed\n");
             return false;
         }
@@ -1060,28 +854,28 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
     {
         VkDescriptorSetAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = state->descriptorPool;
+        allocInfo.descriptorPool = app->descriptorPool;
         allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &state->descriptorSetLayout;
+        allocInfo.pSetLayouts = &app->descriptorSetLayout;
 
-        if (vkAllocateDescriptorSets(state->device, &allocInfo, &state->descriptorSet) != VK_SUCCESS) {
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, &app->descriptorSet) != VK_SUCCESS) {
             LOG_ERROR("vkAllocateDescriptorSets failed\n");
             return false;
         }
 
         VkDescriptorBufferInfo bufferInfo = {};
-        bufferInfo.buffer = state->uniformBuffer;
+        bufferInfo.buffer = app->uniformBuffer;
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(UniformBufferObject);
 
         VkDescriptorImageInfo imageInfo = {};
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = state->textureImageView;
-        imageInfo.sampler = state->textureSampler;
+        imageInfo.imageView = app->textureImageView;
+        imageInfo.sampler = app->textureSampler;
 
         VkWriteDescriptorSet descriptorWrites[2] = {};
         descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[0].dstSet = state->descriptorSet;
+        descriptorWrites[0].dstSet = app->descriptorSet;
         descriptorWrites[0].dstBinding = 0;
         descriptorWrites[0].dstArrayElement = 0;
         descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1089,33 +883,33 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         descriptorWrites[0].pBufferInfo = &bufferInfo;
 
         descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[1].dstSet = state->descriptorSet;
+        descriptorWrites[1].dstSet = app->descriptorSet;
         descriptorWrites[1].dstBinding = 1;
         descriptorWrites[1].dstArrayElement = 0;
         descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         descriptorWrites[1].descriptorCount = 1;
         descriptorWrites[1].pImageInfo = &imageInfo;
 
-        vkUpdateDescriptorSets(state->device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
+        vkUpdateDescriptorSets(window.device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
     }
 
     // Create command buffers
     {
-        state->commandBuffers.size = state->swapchainFramebuffers.size;
+        app->commandBuffers.size = swapchain.framebuffers.size;
 
         VkCommandBufferAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = state->commandPool;
+        allocInfo.commandPool = app->commandPool;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandBufferCount = (uint32_t)state->commandBuffers.size;
+        allocInfo.commandBufferCount = (uint32_t)app->commandBuffers.size;
 
-        if (vkAllocateCommandBuffers(state->device, &allocInfo, state->commandBuffers.data) != VK_SUCCESS) {
+        if (vkAllocateCommandBuffers(window.device, &allocInfo, app->commandBuffers.data) != VK_SUCCESS) {
             LOG_ERROR("vkAllocateCommandBuffers failed\n");
             return false;
         }
 
-        for (uint64 i = 0; i < state->commandBuffers.size; i++) {
-            const VkCommandBuffer& buffer = state->commandBuffers[i];
+        for (uint64 i = 0; i < app->commandBuffers.size; i++) {
+            const VkCommandBuffer& buffer = app->commandBuffers[i];
 
             VkCommandBufferBeginInfo beginInfo = {};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1134,26 +928,25 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
             VkRenderPassBeginInfo renderPassInfo = {};
             renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            renderPassInfo.renderPass = state->renderPass;
-            renderPassInfo.framebuffer = state->swapchainFramebuffers[i];
+            renderPassInfo.renderPass = swapchain.renderPass;
+            renderPassInfo.framebuffer = swapchain.framebuffers[i];
             renderPassInfo.renderArea.offset = { 0, 0 };
-            renderPassInfo.renderArea.extent = state->swapchainExtent;
+            renderPassInfo.renderArea.extent = swapchain.extent;
             renderPassInfo.clearValueCount = C_ARRAY_LENGTH(clearValues);
             renderPassInfo.pClearValues = clearValues;
 
             vkCmdBeginRenderPass(buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, state->graphicsPipeline);
+            vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->graphicsPipeline);
 
-            const VkBuffer vertexBuffers[] = { state->vertexBuffer };
+            const VkBuffer vertexBuffers[] = { app->vertexBuffer };
             const VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(buffer, state->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, state->pipelineLayout, 0, 1,
-                                    &state->descriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
+                                    &app->descriptorSet, 0, nullptr);
 
-            vkCmdDrawIndexed(buffer, (uint32_t)obj.models[0].indices.size, 1, 0, 0, 0);
+            vkCmdDraw(buffer, totalVertices, 1, 0, 0);
 
             vkCmdEndRenderPass(buffer);
 
@@ -1167,128 +960,226 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
     return true;
 }
 
-bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator)
+void UnloadVulkanApp(const VulkanWindow& window, VulkanApp* app)
 {
-    // Verify required layers
-    const char* requiredLayers[] = {
-        "VK_LAYER_KHRONOS_validation",
-    };
+    vkDestroyDescriptorPool(window.device, app->descriptorPool, nullptr);
+
+    vkDestroyBuffer(window.device, app->uniformBuffer, nullptr);
+    vkFreeMemory(window.device, app->uniformBufferMemory, nullptr);
+    vkDestroyBuffer(window.device, app->vertexBuffer, nullptr);
+    vkFreeMemory(window.device, app->vertexBufferMemory, nullptr);
+
+    vkDestroySampler(window.device, app->textureSampler, nullptr);
+    vkDestroyImageView(window.device, app->textureImageView, nullptr);
+    vkDestroyImage(window.device, app->textureImage, nullptr);
+    vkFreeMemory(window.device, app->textureImageMemory, nullptr);
+
+    vkDestroyCommandPool(window.device, app->commandPool, nullptr);
+    vkDestroyPipeline(window.device, app->graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(window.device, app->pipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(window.device, app->descriptorSetLayout, nullptr);
+}
+
+bool LoadVulkanSwapchain(const VulkanWindow& window, Vec2Int size, VulkanSwapchain* swapchain, LinearAllocator* allocator)
+{
+    // Create swapchain
     {
-        uint32_t count;
-        if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+        SwapchainSupportInfo swapchainSupportInfo;
+        GetSwapchainSupportInfo(window.surface, window.physicalDevice, &swapchainSupportInfo);
+
+        const VkSurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapchainSupportInfo.formats.ToArray());
+        const VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Guaranteed to be available
+        const VkExtent2D extent = ChooseSwapExtent(swapchainSupportInfo.capabilities, size);
+
+        uint32_t imageCount = swapchainSupportInfo.capabilities.minImageCount + 1;
+        if (swapchainSupportInfo.capabilities.maxImageCount > 0 &&
+            imageCount > swapchainSupportInfo.capabilities.maxImageCount) {
+            imageCount = swapchainSupportInfo.capabilities.maxImageCount;
+        }
+
+        VkSwapchainCreateInfoKHR createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        createInfo.surface = window.surface;
+        createInfo.minImageCount = imageCount;
+        createInfo.imageFormat = surfaceFormat.format;
+        createInfo.imageColorSpace = surfaceFormat.colorSpace;
+        createInfo.imageExtent = extent;
+        createInfo.imageArrayLayers = 1;
+        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(window.surface, window.physicalDevice, allocator);
+        uint32_t queueFamilyIndices[] = {
+            queueFamilyInfo.graphicsFamilyIndex,
+            queueFamilyInfo.presentFamilyIndex
+        };
+        if (queueFamilyInfo.graphicsFamilyIndex != queueFamilyInfo.presentFamilyIndex) {
+            createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+            createInfo.queueFamilyIndexCount = 2;
+            createInfo.pQueueFamilyIndices = queueFamilyIndices;
+        }
+        else {
+            createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
+
+        createInfo.preTransform = swapchainSupportInfo.capabilities.currentTransform;
+        createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        createInfo.presentMode = presentMode;
+        createInfo.clipped = VK_TRUE;
+        createInfo.oldSwapchain = VK_NULL_HANDLE;
+
+        if (vkCreateSwapchainKHR(window.device, &createInfo, nullptr, &swapchain->swapchain) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSwapchainKHR failed\n");
             return false;
         }
 
-        DynamicArray<VkLayerProperties, LinearAllocator> layers(count, allocator);
-        layers.size = count;
-        if (vkEnumerateInstanceLayerProperties(&count, layers.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+        swapchain->imageFormat = surfaceFormat.format;
+        swapchain->extent = extent;
+        vkGetSwapchainImagesKHR(window.device, swapchain->swapchain, &imageCount, nullptr);
+        if (imageCount > VulkanSwapchain::MAX_IMAGES) {
+            LOG_ERROR("Too many swapchain images: %lu\n", imageCount);
             return false;
         }
+        swapchain->images.size = imageCount;
+        vkGetSwapchainImagesKHR(window.device, swapchain->swapchain, &imageCount, swapchain->images.data);
 
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredLayers); i++) {
-            const_string requiredLayer = ToString(requiredLayers[i]);
-
-            bool found = false;
-            for (uint64 j = 0; j < layers.size; j++) {
-                const_string layerName = ToString(layers[j].layerName);
-                if (StringEquals(requiredLayer, layerName)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                LOG_ERROR("Required Vulkan instance layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
+        swapchain->imageViews.size = imageCount;
+        for (uint64 i = 0; i < swapchain->images.size; i++) {
+            if (!CreateImageView(window.device, swapchain->images[i], surfaceFormat.format,VK_IMAGE_ASPECT_COLOR_BIT,
+                                 &swapchain->imageViews[i])) {
+                LOG_ERROR("CreateImageView failed for image %llu\n", i);
                 return false;
             }
         }
     }
 
-    // Verify required extensions
-    const char* requiredExtensions[] = {
-        "VK_KHR_surface",
-        "VK_KHR_win32_surface",
-        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-    };
+    // Create render pass
     {
-        uint32_t count;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+        VkAttachmentDescription colorAttachment = {};
+        colorAttachment.format = swapchain->imageFormat;
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference colorAttachmentRef = {};
+        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentDescription depthAttachment = {};
+        depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference depthAttachmentRef = {};
+        depthAttachmentRef.attachment = 1;
+        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription subpass = {};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorAttachmentRef;
+        subpass.pDepthStencilAttachment = &depthAttachmentRef;
+
+        VkSubpassDependency dependency = {};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        const VkAttachmentDescription attachments[] = { colorAttachment, depthAttachment };
+        VkRenderPassCreateInfo renderPassCreateInfo = {};
+        renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassCreateInfo.attachmentCount = C_ARRAY_LENGTH(attachments);
+        renderPassCreateInfo.pAttachments = attachments;
+        renderPassCreateInfo.subpassCount = 1;
+        renderPassCreateInfo.pSubpasses = &subpass;
+        renderPassCreateInfo.dependencyCount = 1;
+        renderPassCreateInfo.pDependencies = &dependency;
+
+        if (vkCreateRenderPass(window.device, &renderPassCreateInfo, nullptr, &swapchain->renderPass) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateRenderPass failed\n");
+            return false;
+        }
+    }
+
+    // Create depth resources
+    {
+        if (!CreateImage(window.device, window.physicalDevice,
+                         swapchain->extent.width, swapchain->extent.height,
+                         VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+                         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &swapchain->depthImage, &swapchain->depthImageMemory)) {
+            LOG_ERROR("CreateImage failed\n");
             return false;
         }
 
-        DynamicArray<VkExtensionProperties, LinearAllocator> extensions(count, allocator);
-        extensions.size = count;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data) != VK_SUCCESS) {
-            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+        if (!CreateImageView(window.device, swapchain->depthImage, VK_FORMAT_D32_SFLOAT,
+                             VK_IMAGE_ASPECT_DEPTH_BIT, &swapchain->depthImageView)) {
+            LOG_ERROR("CreateImageView failed\n");
             return false;
         }
+    }
 
-        for (int i = 0; i < C_ARRAY_LENGTH(requiredExtensions); i++) {
-            const_string requiredExtension = ToString(requiredExtensions[i]);
+    // Create framebuffers
+    {
+        swapchain->framebuffers.size = swapchain->imageViews.size;
+        for (uint64 i = 0; i < swapchain->framebuffers.size; i++) {
+            VkImageView attachments[] = {
+                swapchain->imageViews[i],
+                swapchain->depthImageView
+            };
 
-            bool found = false;
-            for (uint64 j = 0; j < extensions.size; j++) {
-                const_string extensionName = ToString(extensions[j].extensionName);
-                if (StringEquals(requiredExtension, extensionName)) {
-                    found = true;
-                    break;
-                }
+            VkFramebufferCreateInfo framebufferCreateInfo = {};
+            framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferCreateInfo.renderPass = swapchain->renderPass;
+            framebufferCreateInfo.attachmentCount = C_ARRAY_LENGTH(attachments);
+            framebufferCreateInfo.pAttachments = attachments;
+            framebufferCreateInfo.width = swapchain->extent.width;
+            framebufferCreateInfo.height = swapchain->extent.height;
+            framebufferCreateInfo.layers = 1;
+
+            if (vkCreateFramebuffer(window.device, &framebufferCreateInfo, nullptr,
+                                    &swapchain->framebuffers[i]) != VK_SUCCESS) {
+                LOG_ERROR("vkCreateFramebuffer failed for framebuffer %llu\n", i);
+                return false;
             }
-            if (!found) {
-                LOG_ERROR("Required Vulkan instance extension not found: %.*s\n",
-                          (int)requiredExtension.size, requiredExtension.data);
-            }
         }
     }
 
-    // Create VkInstance
-    {
-        VkApplicationInfo appInfo = {};
-        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "vulkan";
-        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName = "km3d";
-        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+    return true;
+}
 
-        VkInstanceCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        createInfo.pApplicationInfo = &appInfo;
-        // TODO don't do this in release mode
-        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
-        createInfo.ppEnabledLayerNames = requiredLayers;
-        createInfo.enabledExtensionCount = C_ARRAY_LENGTH(requiredExtensions);
-        createInfo.ppEnabledExtensionNames = requiredExtensions;
-
-        if (vkCreateInstance(&createInfo, nullptr, &state->instance) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateInstance failed\n");
-            return false;
-        }
+void UnloadVulkanSwapchain(const VulkanWindow& window, VulkanSwapchain* swapchain)
+{
+    for (uint64 i = 0; i < swapchain->framebuffers.size; i++) {
+        vkDestroyFramebuffer(window.device, swapchain->framebuffers[i], nullptr);
     }
 
-    // Set up debug messenger
-    {
-        VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        createInfo.pfnUserCallback = VulkanDebugCallback;
-        createInfo.pUserData = nullptr;
+    vkDestroyImageView(window.device, swapchain->depthImageView, nullptr);
+    vkDestroyImage(window.device, swapchain->depthImage, nullptr);
+    vkFreeMemory(window.device, swapchain->depthImageMemory, nullptr);
 
-        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkCreateDebugUtilsMessengerEXT");
-        if (vkCreateDebugUtilsMessengerEXT == nullptr) {
-            LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
-            return false;
-        }
+    vkDestroyRenderPass(window.device, swapchain->renderPass, nullptr);
 
-        if (vkCreateDebugUtilsMessengerEXT(state->instance, &createInfo, nullptr, &state->debugMessenger) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
-            return false;
-        }
+    for (uint64 i = 0; i < swapchain->imageViews.size; i++) {
+        vkDestroyImageView(window.device, swapchain->imageViews[i], nullptr);
     }
+    vkDestroySwapchainKHR(window.device, swapchain->swapchain, nullptr);
+}
 
+bool LoadVulkanWindow(const VulkanCore& core, HINSTANCE hInstance, HWND hWnd, VulkanWindow* window,
+                      LinearAllocator* allocator)
+{
     // Create window surface
     {
         VkWin32SurfaceCreateInfoKHR createInfo = {};
@@ -1296,7 +1187,7 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
         createInfo.hwnd = hWnd;
         createInfo.hinstance = hInstance;
 
-        if (vkCreateWin32SurfaceKHR(state->instance, &createInfo, nullptr, &state->surface) != VK_SUCCESS) {
+        if (vkCreateWin32SurfaceKHR(core.instance, &createInfo, nullptr, &window->surface) != VK_SUCCESS) {
             LOG_ERROR("vkCreateWin32SurfaceKHR failed\n");
             return false;
         }
@@ -1313,7 +1204,7 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
         };
 
         uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(state->instance, &deviceCount, nullptr);
+        vkEnumeratePhysicalDevices(core.instance, &deviceCount, nullptr);
         if (deviceCount == 0) {
             LOG_ERROR("vkEnumeratePhysicalDevices returned 0 devices - no GPUs with Vulkan support\n");
             return false;
@@ -1321,22 +1212,22 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
 
         DynamicArray<VkPhysicalDevice, LinearAllocator> devices(deviceCount, allocator);
         devices.size = deviceCount;
-        vkEnumeratePhysicalDevices(state->instance, &deviceCount, devices.data);
+        vkEnumeratePhysicalDevices(core.instance, &deviceCount, devices.data);
 
-        state->physicalDevice = VK_NULL_HANDLE;
+        window->physicalDevice = VK_NULL_HANDLE;
         for (uint64 i = 0; i < devices.size; i++) {
-            if (IsPhysicalDeviceSuitable(state->surface, devices[i], requiredDeviceExtensionsArray, allocator)) {
-                state->physicalDevice = devices[i];
+            if (IsPhysicalDeviceSuitable(window->surface, devices[i], requiredDeviceExtensionsArray, allocator)) {
+                window->physicalDevice = devices[i];
                 break;
             }
         }
 
-        if (state->physicalDevice == VK_NULL_HANDLE) {
+        if (window->physicalDevice == VK_NULL_HANDLE) {
             LOG_ERROR("Failed to find a suitable GPU for Vulkan\n");
             return false;
         }
 
-        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(state->surface, state->physicalDevice, allocator);
+        QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(window->surface, window->physicalDevice, allocator);
         uint32_t queueFamilyIndices[] = {
             queueFamilyInfo.graphicsFamilyIndex,
             queueFamilyInfo.presentFamilyIndex
@@ -1374,16 +1265,16 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
         createInfo.enabledExtensionCount = (uint32_t)requiredDeviceExtensionsArray.size;
         createInfo.ppEnabledExtensionNames = requiredDeviceExtensionsArray.data;
         // TODO don't do this in release mode
-        createInfo.enabledLayerCount = C_ARRAY_LENGTH(requiredLayers);
-        createInfo.ppEnabledLayerNames = requiredLayers;
+        createInfo.enabledLayerCount = C_ARRAY_LENGTH(REQUIRED_LAYERS);
+        createInfo.ppEnabledLayerNames = REQUIRED_LAYERS;
 
-        if (vkCreateDevice(state->physicalDevice, &createInfo, nullptr, &state->device) != VK_SUCCESS) {
+        if (vkCreateDevice(window->physicalDevice, &createInfo, nullptr, &window->device) != VK_SUCCESS) {
             LOG_ERROR("vkCreateDevice failed\n");
             return false;
         }
 
-        vkGetDeviceQueue(state->device, queueFamilyInfo.graphicsFamilyIndex, 0, &state->graphicsQueue);
-        vkGetDeviceQueue(state->device, queueFamilyInfo.presentFamilyIndex, 0, &state->presentQueue);
+        vkGetDeviceQueue(window->device, queueFamilyInfo.graphicsFamilyIndex, 0, &window->graphicsQueue);
+        vkGetDeviceQueue(window->device, queueFamilyInfo.presentFamilyIndex, 0, &window->presentQueue);
     }
 
     // Create semaphores
@@ -1391,68 +1282,214 @@ bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int
         VkSemaphoreCreateInfo semaphoreCreateInfo = {};
         semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-        if (vkCreateSemaphore(state->device, &semaphoreCreateInfo, nullptr,
-                              &state->imageAvailableSemaphore) != VK_SUCCESS) {
+        if (vkCreateSemaphore(window->device, &semaphoreCreateInfo, nullptr,
+                              &window->imageAvailableSemaphore) != VK_SUCCESS) {
             LOG_ERROR("vkCreateSemaphore failed\n");
             return false;
         }
-        if (vkCreateSemaphore(state->device, &semaphoreCreateInfo, nullptr,
-                              &state->renderFinishedSemaphore) != VK_SUCCESS) {
+        if (vkCreateSemaphore(window->device, &semaphoreCreateInfo, nullptr,
+                              &window->renderFinishedSemaphore) != VK_SUCCESS) {
             LOG_ERROR("vkCreateSemaphore failed\n");
             return false;
         }
     }
 
-    return RecreateVulkanSwapchain(state, size, allocator);
+    return true;
 }
 
-void UnloadVulkanSwapchain(VulkanState* state)
+void UnloadVulkanWindow(const VulkanCore& core, VulkanWindow* window)
 {
-    vkDestroyDescriptorPool(state->device, state->descriptorPool, nullptr);
+    vkDestroySemaphore(window->device, window->renderFinishedSemaphore, nullptr);
+    vkDestroySemaphore(window->device, window->imageAvailableSemaphore, nullptr);
 
-    vkDestroyBuffer(state->device, state->uniformBuffer, nullptr);
-    vkFreeMemory(state->device, state->uniformBufferMemory, nullptr);
-    vkDestroyBuffer(state->device, state->indexBuffer, nullptr);
-    vkFreeMemory(state->device, state->indexBufferMemory, nullptr);
-    vkDestroyBuffer(state->device, state->vertexBuffer, nullptr);
-    vkFreeMemory(state->device, state->vertexBufferMemory, nullptr);
+    vkDestroyDevice(window->device, nullptr);
+    vkDestroySurfaceKHR(core.instance, window->surface, nullptr);
+}
 
-    vkDestroySampler(state->device, state->textureSampler, nullptr);
-    vkDestroyImageView(state->device, state->textureImageView, nullptr);
-    vkDestroyImage(state->device, state->textureImage, nullptr);
-    vkFreeMemory(state->device, state->textureImageMemory, nullptr);
+bool LoadVulkanCore(VulkanCore* core, LinearAllocator* allocator)
+{
+    // Verify required layers
+    {
+        uint32_t count;
+        if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+            return false;
+        }
 
-    vkDestroyImageView(state->device, state->depthImageView, nullptr);
-    vkDestroyImage(state->device, state->depthImage, nullptr);
-    vkFreeMemory(state->device, state->depthImageMemory, nullptr);
+        DynamicArray<VkLayerProperties, LinearAllocator> layers(count, allocator);
+        layers.size = count;
+        if (vkEnumerateInstanceLayerProperties(&count, layers.data) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceLayerProperties failed\n");
+            return false;
+        }
 
-    vkDestroyCommandPool(state->device, state->commandPool, nullptr);
-    for (uint64 i = 0; i < state->swapchainFramebuffers.size; i++) {
-        vkDestroyFramebuffer(state->device, state->swapchainFramebuffers[i], nullptr);
+        for (int i = 0; i < C_ARRAY_LENGTH(REQUIRED_LAYERS); i++) {
+            const_string requiredLayer = ToString(REQUIRED_LAYERS[i]);
+
+            bool found = false;
+            for (uint64 j = 0; j < layers.size; j++) {
+                const_string layerName = ToString(layers[j].layerName);
+                if (StringEquals(requiredLayer, layerName)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                LOG_ERROR("Required Vulkan instance layer not found: %.*s\n", (int)requiredLayer.size, requiredLayer.data);
+                return false;
+            }
+        }
     }
-    vkDestroyPipeline(state->device, state->graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(state->device, state->pipelineLayout, nullptr);
-    vkDestroyDescriptorSetLayout(state->device, state->descriptorSetLayout, nullptr);
-    vkDestroyRenderPass(state->device, state->renderPass, nullptr);
-    for (uint64 i = 0; i < state->swapchainImageViews.size; i++) {
-        vkDestroyImageView(state->device, state->swapchainImageViews[i], nullptr);
+
+    // Verify required extensions
+    {
+        uint32_t count;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+            return false;
+        }
+
+        DynamicArray<VkExtensionProperties, LinearAllocator> extensions(count, allocator);
+        extensions.size = count;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data) != VK_SUCCESS) {
+            LOG_ERROR("vkEnumerateInstanceExtensionProperties failed\n");
+            return false;
+        }
+
+        for (int i = 0; i < C_ARRAY_LENGTH(REQUIRED_EXTENSIONS); i++) {
+            const_string requiredExtension = ToString(REQUIRED_EXTENSIONS[i]);
+
+            bool found = false;
+            for (uint64 j = 0; j < extensions.size; j++) {
+                const_string extensionName = ToString(extensions[j].extensionName);
+                if (StringEquals(requiredExtension, extensionName)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                LOG_ERROR("Required Vulkan instance extension not found: %.*s\n",
+                          (int)requiredExtension.size, requiredExtension.data);
+            }
+        }
     }
-    vkDestroySwapchainKHR(state->device, state->swapchain, nullptr);
+
+    // Create VkInstance
+    {
+        VkApplicationInfo appInfo = {};
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        appInfo.pApplicationName = "vulkan";
+        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.pEngineName = "km3d";
+        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.apiVersion = VK_API_VERSION_1_0;
+
+        VkInstanceCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        createInfo.pApplicationInfo = &appInfo;
+        // TODO don't do this in release mode
+        createInfo.enabledLayerCount = C_ARRAY_LENGTH(REQUIRED_LAYERS);
+        createInfo.ppEnabledLayerNames = REQUIRED_LAYERS;
+        createInfo.enabledExtensionCount = C_ARRAY_LENGTH(REQUIRED_EXTENSIONS);
+        createInfo.ppEnabledExtensionNames = REQUIRED_EXTENSIONS;
+
+        if (vkCreateInstance(&createInfo, nullptr, &core->instance) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateInstance failed\n");
+            return false;
+        }
+    }
+
+    // Set up debug messenger
+    {
+        VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT; // For general debug info, add VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+        createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        createInfo.pfnUserCallback = VulkanDebugCallback;
+        createInfo.pUserData = nullptr;
+
+        auto vkCreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(core->instance, "vkCreateDebugUtilsMessengerEXT");
+        if (vkCreateDebugUtilsMessengerEXT == nullptr) {
+            LOG_ERROR("vkGetInstanceProcAddr failed for vkCreateDebugUtilsMessengerEXT\n");
+            return false;
+        }
+
+        if (vkCreateDebugUtilsMessengerEXT(core->instance, &createInfo, nullptr, &core->debugMessenger) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDebugUtilsMessengerEXT failed\n");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void UnloadVulkanCore(VulkanCore* core)
+{
+    auto vkDestroyDebugUtilsMessengerEXT = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(core->instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (vkDestroyDebugUtilsMessengerEXT == nullptr) {
+        LOG_ERROR("vkGetInstanceProcAddr failed for vkDestroyDebugUtilsMessengerEXT\n");
+    }
+    vkDestroyDebugUtilsMessengerEXT(core->instance, core->debugMessenger, nullptr);
+
+    vkDestroyInstance(core->instance, nullptr);
+}
+
+bool ReloadVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator)
+{
+    UnloadVulkanApp(state->window, &state->app);
+    UnloadVulkanSwapchain(state->window, &state->swapchain);
+
+    if (!LoadVulkanSwapchain(state->window, size, &state->swapchain, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanApp(state->window, state->swapchain, &state->app, allocator)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool ReloadVulkanWindow(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator)
+{
+    UnloadVulkanApp(state->window, &state->app);
+    UnloadVulkanSwapchain(state->window, &state->swapchain);
+    UnloadVulkanWindow(state->core, &state->window);
+
+    if (!LoadVulkanWindow(state->core, hInstance, hWnd, &state->window, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanSwapchain(state->window, size, &state->swapchain, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanApp(state->window, state->swapchain, &state->app, allocator)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator)
+{
+    if (!LoadVulkanCore(&state->core, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanWindow(state->core, hInstance, hWnd, &state->window, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanSwapchain(state->window, size, &state->swapchain, allocator)) {
+        return false;
+    }
+    if (!LoadVulkanApp(state->window, state->swapchain, &state->app, allocator)) {
+        return false;
+    }
+
+    return true;
 }
 
 void UnloadVulkanState(VulkanState* state)
 {
-    UnloadVulkanSwapchain(state);
-
-    auto vkDestroyDebugUtilsMessengerEXT = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(state->instance, "vkDestroyDebugUtilsMessengerEXT");
-    if (vkDestroyDebugUtilsMessengerEXT == nullptr) {
-        LOG_ERROR("vkGetInstanceProcAddr failed for vkDestroyDebugUtilsMessengerEXT\n");
-    }
-
-    vkDestroySemaphore(state->device, state->renderFinishedSemaphore, nullptr);
-    vkDestroySemaphore(state->device, state->imageAvailableSemaphore, nullptr);
-    vkDestroyDevice(state->device, nullptr);
-    vkDestroySurfaceKHR(state->instance, state->surface, nullptr);
-    vkDestroyDebugUtilsMessengerEXT(state->instance, state->debugMessenger, nullptr);
-    vkDestroyInstance(state->instance, nullptr);
+    UnloadVulkanApp(state->window, &state->app);
+    UnloadVulkanSwapchain(state->window, &state->swapchain);
+    UnloadVulkanWindow(state->core, &state->window);
+    UnloadVulkanCore(&state->core);
 }

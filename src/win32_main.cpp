@@ -8,7 +8,9 @@
 #include "vulkan.h"
 
 bool running_ = false;
+bool windowSizeChange_ = false;
 AppInput* input_ = nullptr;
+global_var WINDOWPLACEMENT windowPlacementPrev_ = { sizeof(windowPlacementPrev_) };
 
 KmKeyCode Win32KeyCodeToKm(int vkCode)
 {
@@ -62,6 +64,43 @@ KmKeyCode Win32KeyCodeToKm(int vkCode)
     }
 }
 
+Vec2Int Win32GetRenderingViewportSize(HWND hWnd)
+{
+    RECT clientRect;
+    GetClientRect(hWnd, &clientRect);
+    return Vec2Int { clientRect.right - clientRect.left, clientRect.bottom - clientRect.top };
+}
+
+void Win32ToggleFullscreen(HWND hWnd)
+{
+    // This follows Raymond Chen's perscription for fullscreen toggling. See:
+    // https://blogs.msdn.microsoft.com/oldnewthing/20100412-00/?p=14353
+
+    DWORD dwStyle = GetWindowLong(hWnd, GWL_STYLE);
+    if (dwStyle & WS_OVERLAPPEDWINDOW) {
+        // Switch to fullscreen
+        MONITORINFO monitorInfo = { sizeof(monitorInfo) };
+        HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY);
+        if (GetWindowPlacement(hWnd, &windowPlacementPrev_) && GetMonitorInfo(hMonitor, &monitorInfo)) {
+            SetWindowLong(hWnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW);
+            SetWindowPos(hWnd, HWND_TOP,
+                         monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+                         monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left,
+                         monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        }
+    }
+    else {
+        // Switch to windowed
+        SetWindowLong(hWnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hWnd, &windowPlacementPrev_);
+        SetWindowPos(hWnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        RECT clientRect;
+        GetClientRect(hWnd, &clientRect);
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     LRESULT result = 0;
@@ -80,25 +119,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         } break;
 
         case WM_SIZE: {
-            int width = LOWORD(lParam);
-            int height = HIWORD(lParam);
-#if 0
-            if (glViewport_) {
-                glViewport_(0, 0, width, height);
-            }
-            if (screenInfo_) {
-                screenInfo_->size.x = width;
-                screenInfo_->size.y = height;
-                screenInfo_->changed = true;
-            }
-#endif
+            // TODO is it ok to ignore this?d
+            // windowSizeChange_ = true;
         } break;
 
         case WM_SYSKEYDOWN: {
-            // DEBUG_PANIC("WM_SYSKEYDOWN in WndProc");
+            DEBUG_PANIC("WM_SYSKEYDOWN in WndProc");
         } break;
         case WM_SYSKEYUP: {
-            // DEBUG_PANIC("WM_SYSKEYUP in WndProc");
+            DEBUG_PANIC("WM_SYSKEYUP in WndProc");
         } break;
         case WM_KEYDOWN: {
         } break;
@@ -153,8 +182,8 @@ internal void Win32ProcessMessages(HWND hWnd, AppInput* input)
                 }
 
                 if (vkCode == VK_F11) {
-                    // TODO fullscreen
-                    // Win32ToggleFullscreen(hWnd, glFuncs);
+                    Win32ToggleFullscreen(hWnd);
+                    windowSizeChange_ = true;
                 }
 
                 // Pass over to WndProc for WM_CHAR messages (string input)
@@ -328,8 +357,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             return 1;
         }
     }
-    defer(UnloadVulkanState(&vulkanState));
-    LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchainImages.size);
+    LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchain.images.size);
 
     // Initialize audio
     AppAudio appAudio = {};
@@ -354,15 +382,27 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     running_ = true;
     while (running_) {
-        const Vec2Int screenSize = {
-            (int)vulkanState.swapchainExtent.width,
-            (int)vulkanState.swapchainExtent.height
-        };
-
-        // Process keyboard input & other messages
         int mouseWheelPrev = newInput->mouseWheel;
         Win32ProcessMessages(hWnd, newInput);
         newInput->mouseWheelDelta = newInput->mouseWheel - mouseWheelPrev;
+
+        if (windowSizeChange_) {
+            windowSizeChange_ = false;
+            // TODO duplicate from vkAcquireNextImageKHR out of date case
+            Vec2Int newSize = Win32GetRenderingViewportSize(hWnd);
+            LinearAllocator tempAllocator(appMemory.transient);
+
+            vkDeviceWaitIdle(vulkanState.window.device);
+            if (!ReloadVulkanWindow(&vulkanState, hInstance, hWnd, newSize, &tempAllocator)) {
+                DEBUG_PANIC("Failed to reload Vulkan window\n");
+            }
+            continue;
+        }
+
+        const Vec2Int screenSize = {
+            (int)vulkanState.swapchain.extent.width,
+            (int)vulkanState.swapchain.extent.height
+        };
 
         POINT mousePos;
         GetCursorPos(&mousePos);
@@ -380,23 +420,18 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         }
 
         uint32_t imageIndex;
-        VkResult result = vkAcquireNextImageKHR(vulkanState.device, vulkanState.swapchain, UINT64_MAX,
-                                                vulkanState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        VkResult result = vkAcquireNextImageKHR(vulkanState.window.device, vulkanState.swapchain.swapchain, UINT64_MAX,
+                                                vulkanState.window.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            RECT clientRect;
-            if (GetClientRect(hWnd, &clientRect)) {
-                Vec2Int size = { clientRect.right, clientRect.bottom };
-                LinearAllocator tempAllocator(appMemory.transient);
+            // TODO duplicate from windowSizeChange_
+            Vec2Int newSize = Win32GetRenderingViewportSize(hWnd);
+            LinearAllocator tempAllocator(appMemory.transient);
 
-                // TODO might also want to trigger these more explicitly thru win32 messages
-                vkDeviceWaitIdle(vulkanState.device);
-                UnloadVulkanSwapchain(&vulkanState);
-                RecreateVulkanSwapchain(&vulkanState, size, &tempAllocator);
-                continue;
+            vkDeviceWaitIdle(vulkanState.window.device);
+            if (!ReloadVulkanSwapchain(&vulkanState, newSize, &tempAllocator)) {
+                DEBUG_PANIC("Failed to reload Vulkan swapchain\n");
             }
-            else {
-                LOG_ERROR("GetClientRect failed before swapchain recreation\n");
-            }
+            continue;
         }
         else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
             LOG_ERROR("Failed to acquire swapchain image\n");
@@ -411,45 +446,44 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         static Vec3 cameraPos = { 0.0f, 4.0f, 0.0f };
         static Vec2 cameraAngles = { 0.0f, 0.0f };
 
+        const float32 cameraSensitivity = 2.0f;
         if (MouseDown(*newInput, KM_MOUSE_LEFT)) {
             const Vec2 mouseDeltaFrac = {
                 (float32)newInput->mouseDelta.x / (float32)screenSize.x,
                 (float32)newInput->mouseDelta.y / (float32)screenSize.y
             };
-            cameraAngles += mouseDeltaFrac;
+            cameraAngles += mouseDeltaFrac * cameraSensitivity;
 
             cameraAngles.x = ModFloat32(cameraAngles.x, PI_F * 2.0f);
             cameraAngles.y = ClampFloat32(cameraAngles.y, -PI_F, PI_F);
         }
 
-        const Quat cameraRotYaw = QuatFromAngleUnitAxis(-cameraAngles.x, Vec3::unitZ);
-        const Quat cameraRotPitch = QuatFromAngleUnitAxis(-cameraAngles.y, Vec3::unitY);
+        const Quat cameraRotYaw = QuatFromAngleUnitAxis(cameraAngles.x, Vec3::unitZ);
+        const Quat cameraRotPitch = QuatFromAngleUnitAxis(cameraAngles.y, Vec3::unitY);
 
         const Quat cameraRotYawInv = Inverse(cameraRotYaw);
         const Vec3 cameraForward = cameraRotYawInv * Vec3::unitX;
         const Vec3 cameraRight = cameraRotYawInv * -Vec3::unitY;
         const Vec3 cameraUp = Vec3::unitZ;
 
-        LOG_INFO("forward %.03f, %.03f, %.03f\n", cameraForward.x, cameraForward.y, cameraForward.z);
-        LOG_INFO("right   %.03f, %.03f, %.03f\n", cameraRight.x, cameraRight.y, cameraRight.z);
-
+        const float32 speed = 2.0f;
         if (KeyDown(*newInput, KM_KEY_W)) {
-            cameraPos += cameraForward * lastElapsed;
+            cameraPos += speed * cameraForward * lastElapsed;
         }
         if (KeyDown(*newInput, KM_KEY_S)) {
-            cameraPos -= cameraForward * lastElapsed;
+            cameraPos -= speed * cameraForward * lastElapsed;
         }
         if (KeyDown(*newInput, KM_KEY_A)) {
-            cameraPos -= cameraRight * lastElapsed;
+            cameraPos -= speed * cameraRight * lastElapsed;
         }
         if (KeyDown(*newInput, KM_KEY_D)) {
-            cameraPos += cameraRight * lastElapsed;
+            cameraPos += speed * cameraRight * lastElapsed;
         }
         if (KeyDown(*newInput, KM_KEY_SPACE)) {
-            cameraPos += cameraUp * lastElapsed;
+            cameraPos += speed * cameraUp * lastElapsed;
         }
         if (KeyDown(*newInput, KM_KEY_SHIFT)) {
-            cameraPos -= cameraUp * lastElapsed;
+            cameraPos -= speed * cameraUp * lastElapsed;
         }
 
         const Quat cameraRot = cameraRotPitch * cameraRotYaw;
@@ -463,17 +497,19 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         ubo.view = baseCameraRotMat4 * cameraRotMat4 * Translate(-cameraPos);
 
         const float32 aspect = (float32)screenSize.x / (float32)screenSize.y;
-        ubo.proj = Perspective(PI_F / 4.0f, aspect, 0.1f, 10.0f);
+        const float32 nearZ = 0.1f;
+        const float32 farZ = 50.0f;
+        ubo.proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
         void* data;
-        vkMapMemory(vulkanState.device, vulkanState.uniformBufferMemory, 0, sizeof(ubo), 0, &data);
+        vkMapMemory(vulkanState.window.device, vulkanState.app.uniformBufferMemory, 0, sizeof(ubo), 0, &data);
         MemCopy(data, &ubo, sizeof(ubo));
-        vkUnmapMemory(vulkanState.device, vulkanState.uniformBufferMemory);
+        vkUnmapMemory(vulkanState.window.device, vulkanState.app.uniformBufferMemory);
 
-        const VkSemaphore waitSemaphores[] = { vulkanState.imageAvailableSemaphore };
+        const VkSemaphore waitSemaphores[] = { vulkanState.window.imageAvailableSemaphore };
         const VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
-        const VkSemaphore signalSemaphores[] = { vulkanState.renderFinishedSemaphore };
+        const VkSemaphore signalSemaphores[] = { vulkanState.window.renderFinishedSemaphore };
 
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -481,11 +517,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &vulkanState.commandBuffers[(uint64)imageIndex];
+        submitInfo.pCommandBuffers = &vulkanState.app.commandBuffers[(uint64)imageIndex];
         submitInfo.signalSemaphoreCount = C_ARRAY_LENGTH(signalSemaphores);
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        if (vkQueueSubmit(vulkanState.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        if (vkQueueSubmit(vulkanState.window.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
             LOG_ERROR("Failed to submit draw command buffer\n");
         }
 
@@ -494,14 +530,14 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         presentInfo.waitSemaphoreCount = C_ARRAY_LENGTH(signalSemaphores);
         presentInfo.pWaitSemaphores = signalSemaphores;
         presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &vulkanState.swapchain;
+        presentInfo.pSwapchains = &vulkanState.swapchain.swapchain;
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
-        vkQueuePresentKHR(vulkanState.presentQueue, &presentInfo);
+        vkQueuePresentKHR(vulkanState.window.presentQueue, &presentInfo);
 
-        vkQueueWaitIdle(vulkanState.graphicsQueue);
-        vkQueueWaitIdle(vulkanState.presentQueue);
+        vkQueueWaitIdle(vulkanState.window.graphicsQueue);
+        vkQueueWaitIdle(vulkanState.window.presentQueue);
 
         // timing information
         {
@@ -526,7 +562,8 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         ClearInput(newInput, *oldInput);
     }
 
-    vkDeviceWaitIdle(vulkanState.device);
+    vkDeviceWaitIdle(vulkanState.window.device);
+    UnloadVulkanState(&vulkanState);
 
     return 0;
 }

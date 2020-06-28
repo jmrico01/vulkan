@@ -1,16 +1,18 @@
 #include "load_obj.h"
 
-template <typename Allocator>
-bool LoadObj(const_string filePath, LoadObjResult* result, Allocator* allocator)
+#include <km_common/km_os.h>
+
+bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allocator)
 {
     result->file = LoadEntireFile(filePath, allocator);
     if (result->file.data == nullptr) {
         return false;
     }
 
-    DynamicArray<ObjModel, Allocator> models(allocator);
-    DynamicArray<Vec3, Allocator> vertices(allocator);
-    DynamicArray<uint32_t, Allocator> indices(allocator);
+    DynamicArray<Vec3, LinearAllocator> vertexPositions(allocator);
+    DynamicArray<Vertex, LinearAllocator> vertices(allocator);
+    DynamicArray<int, LinearAllocator> startVertexInds(allocator);
+    int startVertexInd = 0;
 
     string fileString = {
         .size = result->file.size,
@@ -28,27 +30,20 @@ bool LoadObj(const_string filePath, LoadObjResult* result, Allocator* allocator)
                 firstModel = false;
             }
             else {
-                ObjModel* model = models.Append();
-                model->vertices = vertices.ToArray();
-                model->indices = indices.ToArray();
+                startVertexInds.Append(startVertexInd);
+                startVertexInd = (int)vertices.size;
             }
         }
         if (next[0] == 'v' && next[1] == ' ') {
             next.data += 2;
             next.size -= 2;
 
-            Vec3* v = vertices.Append();
+            Vec3* v = vertexPositions.Append();
             int numElements;
             if (!StringToElementArray(next, ' ', false, StringToFloat32, 3, v->e, &numElements)) {
-                indices.Free();
-                vertices.Free();
-                FreeFile(result->file, allocator);
                 return false;
             }
             if (numElements != 3) {
-                indices.Free();
-                vertices.Free();
-                FreeFile(result->file, allocator);
                 return false;
             }
         }
@@ -59,47 +54,59 @@ bool LoadObj(const_string filePath, LoadObjResult* result, Allocator* allocator)
             int inds[4];
             int numElements;
             if (!StringToElementArray(next, ' ', false, StringToIntBase10, 4, inds, &numElements)) {
-                indices.Free();
-                vertices.Free();
-                FreeFile(result->file, allocator);
                 return false;
             }
 
             // NOTE obj files store faces in counter-clockwise order, but we want to return clockwise
             if (numElements == 3) {
-                indices.Append(inds[0] - 1);
-                indices.Append(inds[2] - 1);
-                indices.Append(inds[1] - 1);
+                Vertex* v1 = vertices.Append();
+                Vertex* v2 = vertices.Append();
+                Vertex* v3 = vertices.Append();
+                v1->pos = vertexPositions[inds[0] - 1];
+                v2->pos = vertexPositions[inds[2] - 1];
+                v3->pos = vertexPositions[inds[1] - 1];
+
+                const Vec3 normal = CalculateTriangleUnitNormal(v1->pos, v2->pos, v3->pos);
+                v1->normal = normal;
+                v2->normal = normal;
+                v3->normal = normal;
             }
             else if (numElements == 4) {
-                indices.Append(inds[0] - 1);
-                indices.Append(inds[3] - 1);
-                indices.Append(inds[2] - 1);
-                indices.Append(inds[2] - 1);
-                indices.Append(inds[1] - 1);
-                indices.Append(inds[0] - 1);
+                Vertex* v1 = vertices.Append();
+                Vertex* v2 = vertices.Append();
+                Vertex* v3 = vertices.Append();
+                Vertex* v4 = vertices.Append();
+                Vertex* v5 = vertices.Append();
+                Vertex* v6 = vertices.Append();
+                v1->pos = vertexPositions[inds[0] - 1];
+                v2->pos = vertexPositions[inds[3] - 1];
+                v3->pos = vertexPositions[inds[2] - 1];
+                v4->pos = vertexPositions[inds[2] - 1];
+                v5->pos = vertexPositions[inds[1] - 1];
+                v6->pos = vertexPositions[inds[0] - 1];
+
+                const Vec3 normal = CalculateTriangleUnitNormal(v1->pos, v2->pos, v3->pos);
+                v1->normal = normal;
+                v2->normal = normal;
+                v3->normal = normal;
+                v4->normal = normal;
+                v5->normal = normal;
+                v6->normal = normal;
             }
             else {
-                indices.Free();
-                vertices.Free();
-                FreeFile(result->file, allocator);
                 return false;
             }
         }
     }
 
+    DynamicArray<ObjModel, LinearAllocator> models(allocator);
+    int prevInd = 0;
+    for (uint64 i = 0; i < startVertexInds.size; i++) {
+        ObjModel* model = models.Append();
+        model->vertices = vertices.ToArray().Slice(prevInd, startVertexInds[i]);
+        prevInd = startVertexInds[i];
+    }
+
     result->models = models.ToArray();
     return true;
-}
-
-template <typename Allocator>
-void FreeObj(const LoadObjResult& objResult, Allocator* allocator)
-{
-    for (uint64 i = 0; i < objResult.models.size; i++) {
-        allocator->Free(objResult.models[i].vertices.data);
-        allocator->Free(objResult.models[i].indices.data);
-    }
-    allocator->Free(objResult.models.data);
-
-    FreeFile(objResult.file, allocator);
 }

@@ -7,38 +7,54 @@
 #include <km_common/km_math.h>
 #include <km_common/km_memory.h>
 
-struct VulkanState
+// Core Vulkan state, Should be initialized once in the entire application
+struct VulkanCore
 {
-    static const uint32 MAX_SWAPCHAIN_IMAGES = 16;
-
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
-    VkSurfaceKHR surface;
+};
 
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+// Window/surface-dependent Vulkan state, needs to be recreated when window properties change (e.g. fullscreen)
+struct VulkanWindow
+{
+    VkSurfaceKHR surface;
+    VkPhysicalDevice physicalDevice;
     VkDevice device;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
 
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+};
+
+// Swapchain-dependent Vulkan state, needs to be recreated when application render targets change (e.g. window size)
+struct VulkanSwapchain
+{
+    static const uint32 MAX_IMAGES = 16;
+
     VkSwapchainKHR swapchain;
-    VkFormat swapchainImageFormat;
-    VkExtent2D swapchainExtent;
+    VkFormat imageFormat;
+    VkExtent2D extent;
 
-    FixedArray<VkImage, MAX_SWAPCHAIN_IMAGES> swapchainImages;
-    FixedArray<VkImageView, MAX_SWAPCHAIN_IMAGES> swapchainImageViews;
-
-    VkRenderPass renderPass;
-    VkDescriptorSetLayout descriptorSetLayout;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline graphicsPipeline;
-    FixedArray<VkFramebuffer, MAX_SWAPCHAIN_IMAGES> swapchainFramebuffers;
-
-    VkCommandPool commandPool;
-    FixedArray<VkCommandBuffer, MAX_SWAPCHAIN_IMAGES> commandBuffers;
-
+    FixedArray<VkImage, MAX_IMAGES> images;
+    FixedArray<VkImageView, MAX_IMAGES> imageViews;
     VkImage depthImage;
     VkDeviceMemory depthImageMemory;
     VkImageView depthImageView;
+
+    VkRenderPass renderPass;
+    FixedArray<VkFramebuffer, MAX_IMAGES> framebuffers;
+};
+
+// Application-specific Vulkan state
+struct VulkanApp
+{
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
+
+    VkCommandPool commandPool;
+    FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
 
     VkImage textureImage;
     VkDeviceMemory textureImageMemory;
@@ -47,20 +63,27 @@ struct VulkanState
 
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
-    VkBuffer indexBuffer;
-    VkDeviceMemory indexBufferMemory;
     VkBuffer uniformBuffer;
     VkDeviceMemory uniformBufferMemory;
 
     VkDescriptorPool descriptorPool;
     VkDescriptorSet descriptorSet;
-
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
 };
 
-bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator);
-bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
+struct VulkanState
+{
+    VulkanCore core;
+    VulkanWindow window;
+    VulkanSwapchain swapchain;
 
-void UnloadVulkanSwapchain(VulkanState* state);
+    VulkanApp app;
+};
+
+// Reloads VulkanSwapchain and all dependent state
+bool ReloadVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator);
+// Reloads VulkanWindow and all dependent state
+bool ReloadVulkanWindow(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
+
+bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
 void UnloadVulkanState(VulkanState* state);
+

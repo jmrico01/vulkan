@@ -5,10 +5,15 @@
 #include <km_common/km_memory.h>
 #include <km_common/km_string.h>
 
+struct Vertex
+{
+    Vec3 pos;
+    Vec3 normal;
+};
+
 struct ObjModel
 {
-    Array<Vec3> vertices;
-    Array<uint32_t> indices;
+    Array<Vertex> vertices;
 };
 
 struct LoadObjResult
@@ -17,8 +22,4 @@ struct LoadObjResult
     Array<ObjModel> models;
 };
 
-template <typename Allocator>
-bool LoadObj(const_string filePath, LoadObjResult* result, Allocator* allocator);
-
-template <typename Allocator>
-void FreeObj(const LoadObjResult& objResult, Allocator* allocator);
+bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allocator);
