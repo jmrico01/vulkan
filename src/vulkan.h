@@ -3,7 +3,7 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
-#include <km_common/km_lib.h>
+#include <km_common/km_array.h>
 #include <km_common/km_math.h>
 #include <km_common/km_memory.h>
 

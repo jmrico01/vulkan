@@ -1,8 +1,8 @@
 #include <stdio.h>
 
+#include <km_common/km_array.h>
 #include <km_common/km_debug.h>
 #include <km_common/km_defines.h>
-#include <km_common/km_lib.h>
 
 #define LOG_ERROR(format, ...) fprintf(stderr, format, ##__VA_ARGS__)
 #define LOG_INFO(format, ...)  fprintf(stderr, format, ##__VA_ARGS__)
@@ -14,6 +14,7 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
+#include "load_obj.cpp"
 #include "vulkan.cpp"
 
 #if GAME_WIN32
@@ -22,8 +23,9 @@ const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 #error "Unsupported platform"
 #endif
 
+#include <km_common/km_array.cpp>
 #include <km_common/km_container.cpp>
-#include <km_common/km_lib.cpp>
+#include <km_common/km_input.cpp>
 #include <km_common/km_memory.cpp>
 #include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>

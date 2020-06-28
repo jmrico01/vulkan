@@ -2,9 +2,65 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
+#include <km_common/km_input.h>
+
+#include "app_main.h"
 #include "vulkan.h"
 
 bool running_ = false;
+AppInput* input_ = nullptr;
+
+KmKeyCode Win32KeyCodeToKm(int vkCode)
+{
+    // Numbers, letters, text
+    if (vkCode >= 0x30 && vkCode <= 0x39) {
+        return (KmKeyCode)(vkCode - 0x30 + KM_KEY_0);
+    }
+    else if (vkCode >= 0x41 && vkCode <= 0x5a) {
+        return (KmKeyCode)(vkCode - 0x41 + KM_KEY_A);
+    }
+    else if (vkCode == VK_SPACE) {
+        return KM_KEY_SPACE;
+    }
+    else if (vkCode == VK_BACK) {
+        return KM_KEY_BACKSPACE;
+    }
+    // Arrow keys
+    else if (vkCode == VK_UP) {
+        return KM_KEY_ARROW_UP;
+    }
+    else if (vkCode == VK_DOWN) {
+        return KM_KEY_ARROW_DOWN;
+    }
+    else if (vkCode == VK_LEFT) {
+        return KM_KEY_ARROW_LEFT;
+    }
+    else if (vkCode == VK_RIGHT) {
+        return KM_KEY_ARROW_RIGHT;
+    }
+    // Special keys
+    else if (vkCode == VK_ESCAPE) {
+        return KM_KEY_ESCAPE;
+    }
+    else if (vkCode == VK_SHIFT) {
+        return KM_KEY_SHIFT;
+    }
+    else if (vkCode == VK_CONTROL) {
+        return KM_KEY_CTRL;
+    }
+    else if (vkCode == VK_TAB) {
+        return KM_KEY_TAB;
+    }
+    else if (vkCode == VK_RETURN) {
+        return KM_KEY_ENTER;
+    }
+    else if (vkCode >= 0x60 && vkCode <= 0x69) {
+        return (KmKeyCode)(vkCode - 0x60 + KM_KEY_NUMPAD_0);
+    }
+    else {
+        return KM_KEY_INVALID;
+    }
+}
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -23,10 +79,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             running_ = false;
         } break;
 
-#if 0
         case WM_SIZE: {
             int width = LOWORD(lParam);
             int height = HIWORD(lParam);
+#if 0
             if (glViewport_) {
                 glViewport_(0, 0, width, height);
             }
@@ -35,6 +91,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 screenInfo_->size.y = height;
                 screenInfo_->changed = true;
             }
+#endif
         } break;
 
         case WM_SYSKEYDOWN: {
@@ -53,7 +110,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             input_->keyboardString[input_->keyboardStringLen++] = c;
             input_->keyboardString[input_->keyboardStringLen] = '\0';
         } break;
-#endif
 
         default: {
             result = DefWindowProc(hWnd, message, wParam, lParam);
@@ -63,7 +119,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     return result;
 }
 
-internal void Win32ProcessMessages(HWND hWnd)
+internal void Win32ProcessMessages(HWND hWnd, AppInput* input)
 {
     MSG msg;
     while (PeekMessage(&msg, 0, 0, 0, PM_REMOVE)) {
@@ -82,7 +138,7 @@ internal void Win32ProcessMessages(HWND hWnd)
             } break;
             case WM_SYSKEYUP: {
             } break;
-#if 0
+
             case WM_KEYDOWN: {
                 uint32 vkCode = (uint32)msg.wParam;
                 bool wasDown = ((msg.lParam & (1 << 30)) != 0);
@@ -90,18 +146,19 @@ internal void Win32ProcessMessages(HWND hWnd)
                 int transitions = (wasDown != isDown) ? 1 : 0;
                 DEBUG_ASSERT(isDown);
 
-                int kmKeyCode = Win32KeyCodeToKM(vkCode);
-                if (kmKeyCode != -1) {
-                    gameInput->keyboard[kmKeyCode].isDown = isDown;
-                    gameInput->keyboard[kmKeyCode].transitions = transitions;
+                int kmKeyCode = Win32KeyCodeToKm(vkCode);
+                if (kmKeyCode != KM_KEY_INVALID) {
+                    input->keyboard[kmKeyCode].isDown = isDown;
+                    input->keyboard[kmKeyCode].transitions = transitions;
                 }
 
                 if (vkCode == VK_F11) {
-                    Win32ToggleFullscreen(hWnd, glFuncs);
+                    // TODO fullscreen
+                    // Win32ToggleFullscreen(hWnd, glFuncs);
                 }
 
                 // Pass over to WndProc for WM_CHAR messages (string input)
-                input_ = gameInput;
+                input_ = input;
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } break;
@@ -112,62 +169,62 @@ internal void Win32ProcessMessages(HWND hWnd)
                 int transitions = (wasDown != isDown) ? 1 : 0;
                 DEBUG_ASSERT(!isDown);
 
-                int kmKeyCode = Win32KeyCodeToKM(vkCode);
-                if (kmKeyCode != -1) {
-                    gameInput->keyboard[kmKeyCode].isDown = isDown;
-                    gameInput->keyboard[kmKeyCode].transitions = transitions;
+                int kmKeyCode = Win32KeyCodeToKm(vkCode);
+                if (kmKeyCode != KM_KEY_INVALID) {
+                    input->keyboard[kmKeyCode].isDown = isDown;
+                    input->keyboard[kmKeyCode].transitions = transitions;
                 }
             } break;
 
             case WM_LBUTTONDOWN: {
-                gameInput->mouseButtons[0].isDown = true;
-                gameInput->mouseButtons[0].transitions = 1;
+                input->mouseButtons[KM_MOUSE_LEFT].isDown = true;
+                input->mouseButtons[KM_MOUSE_LEFT].transitions = 1;
             } break;
             case WM_LBUTTONUP: {
-                gameInput->mouseButtons[0].isDown = false;
-                gameInput->mouseButtons[0].transitions = 1;
+                input->mouseButtons[KM_MOUSE_LEFT].isDown = false;
+                input->mouseButtons[KM_MOUSE_LEFT].transitions = 1;
             } break;
             case WM_RBUTTONDOWN: {
-                gameInput->mouseButtons[1].isDown = true;
-                gameInput->mouseButtons[1].transitions = 1;
+                input->mouseButtons[KM_MOUSE_RIGHT].isDown = true;
+                input->mouseButtons[KM_MOUSE_RIGHT].transitions = 1;
             } break;
             case WM_RBUTTONUP: {
-                gameInput->mouseButtons[1].isDown = false;
-                gameInput->mouseButtons[1].transitions = 1;
+                input->mouseButtons[KM_MOUSE_RIGHT].isDown = false;
+                input->mouseButtons[KM_MOUSE_RIGHT].transitions = 1;
             } break;
             case WM_MBUTTONDOWN: {
-                gameInput->mouseButtons[2].isDown = true;
-                gameInput->mouseButtons[2].transitions = 1;
+                input->mouseButtons[KM_MOUSE_MIDDLE].isDown = true;
+                input->mouseButtons[KM_MOUSE_MIDDLE].transitions = 1;
             } break;
             case WM_MBUTTONUP: {
-                gameInput->mouseButtons[2].isDown = false;
-                gameInput->mouseButtons[2].transitions = 1;
+                input->mouseButtons[KM_MOUSE_MIDDLE].isDown = false;
+                input->mouseButtons[KM_MOUSE_MIDDLE].transitions = 1;
             } break;
             case WM_XBUTTONDOWN: {
                 if ((msg.wParam & MK_XBUTTON1) != 0) {
-                    gameInput->mouseButtons[3].isDown = true;
-                    gameInput->mouseButtons[3].transitions = 1;
+                    input->mouseButtons[KM_MOUSE_ALT1].isDown = true;
+                    input->mouseButtons[KM_MOUSE_ALT1].transitions = 1;
                 }
                 else if ((msg.wParam & MK_XBUTTON2) != 0) {
-                    gameInput->mouseButtons[4].isDown = true;
-                    gameInput->mouseButtons[4].transitions = 1;
+                    input->mouseButtons[KM_MOUSE_ALT2].isDown = true;
+                    input->mouseButtons[KM_MOUSE_ALT2].transitions = 1;
                 }
             } break;
             case WM_XBUTTONUP: {
                 if ((msg.wParam & MK_XBUTTON1) != 0) {
-                    gameInput->mouseButtons[3].isDown = false;
-                    gameInput->mouseButtons[3].transitions = 1;
+                    input->mouseButtons[KM_MOUSE_ALT1].isDown = false;
+                    input->mouseButtons[KM_MOUSE_ALT1].transitions = 1;
                 }
                 else if ((msg.wParam & MK_XBUTTON2) != 0) {
-                    gameInput->mouseButtons[4].isDown = false;
-                    gameInput->mouseButtons[4].transitions = 1;
+                    input->mouseButtons[KM_MOUSE_ALT2].isDown = false;
+                    input->mouseButtons[KM_MOUSE_ALT2].transitions = 1;
                 }
             } break;
             case WM_MOUSEWHEEL: {
                 // TODO standardize these units
-                gameInput->mouseWheel += GET_WHEEL_DELTA_WPARAM(msg.wParam);
+                input->mouseWheel += GET_WHEEL_DELTA_WPARAM(msg.wParam);
             } break;
-#endif
+
             default: {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
@@ -238,6 +295,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     LPVOID baseAddress = 0;
 #endif
 
+    // Initialize app memory
     Array<uint8> totalMemory;
     totalMemory.size = PERMANENT_MEMORY_SIZE + TRANSIENT_MEMORY_SIZE;
     totalMemory.data = (uint8*)VirtualAlloc(baseAddress, totalMemory.size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -246,20 +304,24 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         LOG_FLUSH();
         return 1;
     }
-
-    const Array<uint8> permanentMemory = {
-        .size = PERMANENT_MEMORY_SIZE,
-        .data = totalMemory.data
+    AppMemory appMemory = {
+        .initialized = false,
+        .permanent = {
+            .size = PERMANENT_MEMORY_SIZE,
+            .data = totalMemory.data
+        },
+        .transient = {
+            .size = TRANSIENT_MEMORY_SIZE,
+            .data = totalMemory.data + PERMANENT_MEMORY_SIZE
+        }
     };
-    const Array<uint8> transientMemory = {
-        .size = TRANSIENT_MEMORY_SIZE,
-        .data = totalMemory.data + PERMANENT_MEMORY_SIZE
-    };
+    LOG_INFO("Initialized app memory, %llu bytes\n", totalMemory.size);
 
+    // Initialize Vulkan
     Vec2Int windowSize = { WINDOW_START_WIDTH, WINDOW_START_HEIGHT };
     VulkanState vulkanState;
     {
-        LinearAllocator tempAllocator(transientMemory);
+        LinearAllocator tempAllocator(appMemory.transient);
         if (!LoadVulkanState(&vulkanState, hInstance, hWnd, windowSize, &tempAllocator)) {
             LOG_ERROR("LoadVulkanState failed\n");
             LOG_FLUSH();
@@ -268,6 +330,13 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
     defer(UnloadVulkanState(&vulkanState));
     LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchainImages.size);
+
+    // Initialize audio
+    AppAudio appAudio = {};
+
+    AppInput input[2] = {};
+    AppInput *newInput = &input[0];
+    AppInput *oldInput = &input[1];
 
     // Initialize timing information
     int64 timerFreq;
@@ -281,12 +350,34 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         QueryPerformanceCounter(&timerLast);
         cyclesLast = __rdtsc();
     }
-
     float32 lastElapsed = 0.0f;
 
     running_ = true;
     while (running_) {
-        Win32ProcessMessages(hWnd);
+        const Vec2Int screenSize = {
+            (int)vulkanState.swapchainExtent.width,
+            (int)vulkanState.swapchainExtent.height
+        };
+
+        // Process keyboard input & other messages
+        int mouseWheelPrev = newInput->mouseWheel;
+        Win32ProcessMessages(hWnd, newInput);
+        newInput->mouseWheelDelta = newInput->mouseWheel - mouseWheelPrev;
+
+        POINT mousePos;
+        GetCursorPos(&mousePos);
+        ScreenToClient(hWnd, &mousePos);
+        Vec2Int mousePosPrev = newInput->mousePos;
+        newInput->mousePos.x = mousePos.x;
+        newInput->mousePos.y = screenSize.y - mousePos.y;
+        newInput->mouseDelta = newInput->mousePos - mousePosPrev;
+        if (mousePos.x < 0 || mousePos.x > screenSize.x || mousePos.y < 0 || mousePos.y > screenSize.y) {
+            for (int i = 0; i < 5; i++) {
+                int transitions = newInput->mouseButtons[i].isDown ? 1 : 0;
+                newInput->mouseButtons[i].isDown = false;
+                newInput->mouseButtons[i].transitions = transitions;
+            }
+        }
 
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(vulkanState.device, vulkanState.swapchain, UINT64_MAX,
@@ -295,7 +386,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             RECT clientRect;
             if (GetClientRect(hWnd, &clientRect)) {
                 Vec2Int size = { clientRect.right, clientRect.bottom };
-                LinearAllocator tempAllocator(transientMemory);
+                LinearAllocator tempAllocator(appMemory.transient);
 
                 // TODO might also want to trigger these more explicitly thru win32 messages
                 vkDeviceWaitIdle(vulkanState.device);
@@ -315,13 +406,63 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         totalElapsed += lastElapsed;
 
         UniformBufferObject ubo;
-        ubo.model = Rotate(Vec3 { 0.0f, 0.0f, totalElapsed }) * Translate(Vec3 { -0.5f, -0.5f, 0.0f });
+        ubo.model = Mat4::one;
 
-        const Vec3 cameraPos = { 0.0f, 0.1f, -5.0f };
-        const Quat cameraRot = QuatFromEulerAngles(Vec3 { PI_F / 4.0f, 0.0f, 0.0f });
-        ubo.view = Translate(-cameraPos) * UnitQuatToMat4(Inverse(cameraRot));
+        static Vec3 cameraPos = { 0.0f, 4.0f, 0.0f };
+        static Vec2 cameraAngles = { 0.0f, 0.0f };
 
-        const float32 aspect = (float32)vulkanState.swapchainExtent.width / (float32)vulkanState.swapchainExtent.height;
+        if (MouseDown(*newInput, KM_MOUSE_LEFT)) {
+            const Vec2 mouseDeltaFrac = {
+                (float32)newInput->mouseDelta.x / (float32)screenSize.x,
+                (float32)newInput->mouseDelta.y / (float32)screenSize.y
+            };
+            cameraAngles += mouseDeltaFrac;
+
+            cameraAngles.x = ModFloat32(cameraAngles.x, PI_F * 2.0f);
+            cameraAngles.y = ClampFloat32(cameraAngles.y, -PI_F, PI_F);
+        }
+
+        const Quat cameraRotYaw = QuatFromAngleUnitAxis(-cameraAngles.x, Vec3::unitZ);
+        const Quat cameraRotPitch = QuatFromAngleUnitAxis(-cameraAngles.y, Vec3::unitY);
+
+        const Quat cameraRotYawInv = Inverse(cameraRotYaw);
+        const Vec3 cameraForward = cameraRotYawInv * Vec3::unitX;
+        const Vec3 cameraRight = cameraRotYawInv * -Vec3::unitY;
+        const Vec3 cameraUp = Vec3::unitZ;
+
+        LOG_INFO("forward %.03f, %.03f, %.03f\n", cameraForward.x, cameraForward.y, cameraForward.z);
+        LOG_INFO("right   %.03f, %.03f, %.03f\n", cameraRight.x, cameraRight.y, cameraRight.z);
+
+        if (KeyDown(*newInput, KM_KEY_W)) {
+            cameraPos += cameraForward * lastElapsed;
+        }
+        if (KeyDown(*newInput, KM_KEY_S)) {
+            cameraPos -= cameraForward * lastElapsed;
+        }
+        if (KeyDown(*newInput, KM_KEY_A)) {
+            cameraPos -= cameraRight * lastElapsed;
+        }
+        if (KeyDown(*newInput, KM_KEY_D)) {
+            cameraPos += cameraRight * lastElapsed;
+        }
+        if (KeyDown(*newInput, KM_KEY_SPACE)) {
+            cameraPos += cameraUp * lastElapsed;
+        }
+        if (KeyDown(*newInput, KM_KEY_SHIFT)) {
+            cameraPos -= cameraUp * lastElapsed;
+        }
+
+        const Quat cameraRot = cameraRotPitch * cameraRotYaw;
+        const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
+
+        // Transforms world-view camera (+X forward, +Z up) to Vulkan camera (+Z forward, -Y up)
+        const Quat baseCameraRot = QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY)
+            * QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX);
+        const Mat4 baseCameraRotMat4 = UnitQuatToMat4(baseCameraRot);
+
+        ubo.view = baseCameraRotMat4 * cameraRotMat4 * Translate(-cameraPos);
+
+        const float32 aspect = (float32)screenSize.x / (float32)screenSize.y;
         ubo.proj = Perspective(PI_F / 4.0f, aspect, 0.1f, 10.0f);
 
         void* data;
@@ -373,11 +514,16 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             float32 elapsedMs = lastElapsed * 1000.0f;
             int64 cyclesElapsed = cyclesEnd - cyclesLast;
             float64 megaCyclesElapsed = (float64)cyclesElapsed / 1000000.0f;
-            LOG_INFO("elapsed %.03f ms | %.03f MC\n", elapsedMs, megaCyclesElapsed);
+            // LOG_INFO("elapsed %.03f ms | %.03f MC\n", elapsedMs, megaCyclesElapsed);
 
             timerLast = timerEnd;
             cyclesLast = cyclesEnd;
         }
+
+        AppInput *temp = newInput;
+        newInput = oldInput;
+        oldInput = temp;
+        ClearInput(newInput, *oldInput);
     }
 
     vkDeviceWaitIdle(vulkanState.device);

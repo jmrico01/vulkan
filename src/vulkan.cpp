@@ -6,45 +6,7 @@
 #include <km_common/km_os.h>
 #include <km_common/km_string.h>
 
-struct Vertex
-{
-    Vec3 pos;
-    Vec3 color;
-    Vec2 uv;
-
-    static VkVertexInputBindingDescription GetBindingDescription()
-    {
-        VkVertexInputBindingDescription bindingDescription = {};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
-        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-        return bindingDescription;
-    }
-
-    static FixedArray<VkVertexInputAttributeDescription, 3> GetAttributeDescriptions()
-    {
-        FixedArray<VkVertexInputAttributeDescription, 3> attributeDescriptions;
-        attributeDescriptions.size = 3;
-
-        attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(Vertex, pos);
-
-        attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1;
-        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(Vertex, color);
-
-        attributeDescriptions[2].binding = 0;
-        attributeDescriptions[2].location = 2;
-        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(Vertex, uv);
-
-        return attributeDescriptions;
-    }
-};
+#include "load_obj.h"
 
 struct UniformBufferObject
 {
@@ -53,19 +15,19 @@ struct UniformBufferObject
     alignas(16) Mat4 proj;
 };
 
-const Vertex VERTICES[] = {
-    { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-    { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-    { { 1.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-    { { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+const Vec3 VERTICES[] = {
+    { { 0.0f, 0.0f, 0.0f } },
+    { { 1.0f, 0.0f, 0.0f } },
+    { { 1.0f, 1.0f, 0.0f } },
+    { { 0.0f, 1.0f, 0.0f } },
 
-    { { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f } },
-    { { 1.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-    { { 1.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-    { { 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+    { { 0.0f, 0.0f, 1.0f } },
+    { { 1.0f, 0.0f, 1.0f } },
+    { { 1.0f, 1.0f, 1.0f } },
+    { { 0.0f, 1.0f, 1.0f } },
 };
 
-const uint16_t INDICES[] = {
+const int INDICES[] = {
     0, 1, 2, 2, 3, 0,
     3, 2, 6, 6, 7, 3,
     0, 3, 7, 7, 4, 0,
@@ -79,6 +41,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSev
                                                           const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                                           void* pUserData)
 {
+    UNREFERENCED_PARAMETER(pUserData);
+
     LOG_ERROR("Validation layer, message (severity %d, type %d): %s\n",
               messageSeverity, messageType, pCallbackData->pMessage);
     return VK_FALSE;
@@ -161,12 +125,6 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(const Array<VkSurfaceFormatKHR>& avai
     }
 
     return availableFormats[0]; // sloppy fallback
-}
-
-VkPresentModeKHR ChooseSwapPresentMode(const Array<VkPresentModeKHR>& availablePresentModes)
-{
-    // NOTE VK_PRESENT_MODE_FIFO_KHR is guaranteed to be available, so we just return that
-    return VK_PRESENT_MODE_FIFO_KHR;
 }
 
 VkExtent2D ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, Vec2Int screenSize)
@@ -501,7 +459,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         GetSwapchainSupportInfo(state->surface, state->physicalDevice, &swapchainSupportInfo);
 
         const VkSurfaceFormatKHR surfaceFormat = ChooseSwapSurfaceFormat(swapchainSupportInfo.formats.ToArray());
-        const VkPresentModeKHR presentMode = ChooseSwapPresentMode(swapchainSupportInfo.presentModes.ToArray());
+        const VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Guaranteed to be available
         const VkExtent2D extent = ChooseSwapExtent(swapchainSupportInfo.capabilities, size);
 
         uint32_t imageCount = swapchainSupportInfo.capabilities.minImageCount + 1;
@@ -697,15 +655,23 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
         VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo };
 
-        const VkVertexInputBindingDescription bindingDescription = Vertex::GetBindingDescription();
-        const auto attributeDescriptions = Vertex::GetAttributeDescriptions();
+        VkVertexInputBindingDescription bindingDescription = {};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vec3);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        VkVertexInputAttributeDescription attributeDescription = {};
+        attributeDescription.binding = 0;
+        attributeDescription.location = 0;
+        attributeDescription.offset = 0;
+        attributeDescription.format = VK_FORMAT_R32G32B32_SFLOAT;
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
         vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         vertexInputCreateInfo.vertexBindingDescriptionCount = 1;
         vertexInputCreateInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputCreateInfo.vertexAttributeDescriptionCount = (uint32_t)attributeDescriptions.size;
-        vertexInputCreateInfo.pVertexAttributeDescriptions = attributeDescriptions.data;
+        vertexInputCreateInfo.vertexAttributeDescriptionCount = 1;
+        vertexInputCreateInfo.pVertexAttributeDescriptions = &attributeDescription;
 
         VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {};
         inputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -977,11 +943,18 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         }
     }
 
+    LoadObjResult obj;
+    if (!LoadObj(ToString("data/models/reference-scene.obj"), &obj, allocator)) {
+        LOG_ERROR("Failed to load reference scene .obj\n");
+        return false;
+    }
+    FreeObj(obj, allocator);
+
     // Create vertex buffer
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
     // but doesn't really need to be recreated with the swapchain
     {
-        VkDeviceSize vertexBufferSize = sizeof(VERTICES);
+        VkDeviceSize vertexBufferSize = obj.models[0].vertices.size * sizeof(Vec3);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -1004,7 +977,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         // Copy vertex data from CPU into memory-mapped staging buffer
         void* data;
         vkMapMemory(state->device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-        MemCopy(data, VERTICES, vertexBufferSize);
+        MemCopy(data, obj.models[9].vertices.data, vertexBufferSize);
         vkUnmapMemory(state->device, stagingBufferMemory);
 
         // Copy vertex data from staging buffer into GPU vertex buffer
@@ -1017,7 +990,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
 
     // Create index buffer
     {
-        VkDeviceSize indexBufferSize = sizeof(INDICES);
+        VkDeviceSize indexBufferSize = obj.models[0].indices.size * sizeof(int);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -1040,7 +1013,7 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
         // Copy data from CPU into memory-mapped staging buffer
         void* data;
         vkMapMemory(state->device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
-        MemCopy(data, INDICES, indexBufferSize);
+        MemCopy(data, obj.models[0].indices.data, indexBufferSize);
         vkUnmapMemory(state->device, stagingBufferMemory);
 
         // Copy  data from staging buffer into GPU buffer
@@ -1175,12 +1148,12 @@ bool RecreateVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* 
             const VkBuffer vertexBuffers[] = { state->vertexBuffer };
             const VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
-            vkCmdBindIndexBuffer(buffer, state->indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            vkCmdBindIndexBuffer(buffer, state->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
             vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, state->pipelineLayout, 0, 1,
                                     &state->descriptorSet, 0, nullptr);
 
-            vkCmdDrawIndexed(buffer, C_ARRAY_LENGTH(INDICES), 1, 0, 0, 0);
+            vkCmdDrawIndexed(buffer, (uint32_t)obj.models[0].indices.size, 1, 0, 0, 0);
 
             vkCmdEndRenderPass(buffer);
 
