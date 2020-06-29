@@ -9,6 +9,7 @@ struct Vertex
 {
     Vec3 pos;
     Vec3 normal;
+    Vec2 uv;
 };
 
 struct ObjModel
