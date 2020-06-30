@@ -31,6 +31,11 @@ internal AppState* GetAppState(AppMemory* memory)
     return (AppState*)memory->permanent.data;
 }
 
+internal Vec3 RaycastColor(Vec3 pos, Vec3 normal, Array<ObjModel> models)
+{
+    return normal;
+}
+
 internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
 {
     const ObjModel& model = models[modelInd];
@@ -64,10 +69,13 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
                 const Vec3 bC = BarycentricCoordinates(uv, v1.uv, v2.uv, v3.uv);
                 if (B_MIN <= bC.x && bC.x <= B_MAX && B_MIN <= bC.y && bC.y <= B_MAX && B_MIN <= bC.z && bC.z <= B_MAX) {
                     const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
+                    const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
 
-                    uint8 r = (uint8)(pos.x * 255.0f);
-                    uint8 g = (uint8)(pos.y * 255.0f);
-                    uint8 b = (uint8)(pos.z * 255.0f);
+                    const Vec3 raycastColor = RaycastColor(pos, normal, models);
+
+                    uint8 r = (uint8)(raycastColor.x * 255.0f);
+                    uint8 g = (uint8)(raycastColor.y * 255.0f);
+                    uint8 b = (uint8)(raycastColor.z * 255.0f);
                     uint8 a = 0xff;
                     pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
                 }
