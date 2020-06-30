@@ -89,16 +89,42 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
 
     const uint64 numTriangles = model.vertices.size / 3;
     for (uint64 i = 0; i < numTriangles; i++) {
-        const Vertex v1 = vertices[i * 3];
-        const Vertex v2 = vertices[i * 3 + 1];
-        const Vertex v3 = vertices[i * 3 + 2];
+        const Vertex v1 = model.vertices[i * 3];
+        const Vertex v2 = model.vertices[i * 3 + 1];
+        const Vertex v3 = model.vertices[i * 3 + 2];
 
-        Vec2 min = {
+        const Vec2 min = {
             MinFloat32(v1.uv.x, MinFloat32(v2.uv.x, v3.uv.x)),
             MinFloat32(v1.uv.y, MinFloat32(v2.uv.y, v3.uv.y))
         };
+        const Vec2 max = {
+            MaxFloat32(v1.uv.x, MaxFloat32(v2.uv.x, v3.uv.x)),
+            MaxFloat32(v1.uv.y, MaxFloat32(v2.uv.y, v3.uv.y))
+        };
+        const Vec2Int minPixel = { (int)(min.x * squareSize), (int)(min.y * squareSize) };
+        const Vec2Int maxPixel = { (int)(max.x * squareSize), (int)(max.y * squareSize) };
+        const float32 MARGIN_BARYCENTRIC = 0.0f;
+        const float32 B_MIN = -MARGIN_BARYCENTRIC;
+        const float32 B_MAX = 1.0f + MARGIN_BARYCENTRIC;
+
+        for (int y = minPixel.y; y < maxPixel.y; y++) {
+            for (int x = minPixel.x; x < maxPixel.x; x++) {
+                const Vec2 uv = { (float32)x / squareSize, (float32)y / squareSize };
+                const Vec3 bC = BarycentricCoordinates(uv, v1.uv, v2.uv, v3.uv);
+                if (B_MIN <= bC.x && bC.x <= B_MAX && B_MIN <= bC.y && bC.y <= B_MAX && B_MIN <= bC.z && bC.z <= B_MAX) {
+                    const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
+
+                    uint8 r = (uint8)(pos.x * 255.0f);
+                    uint8 g = (uint8)(pos.y * 255.0f);
+                    uint8 b = (uint8)(pos.z * 255.0f);
+                    uint8 a = 0xff;
+                    pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
+                }
+            }
+        }
     }
 
+#if 0
     for (int y = 0; y < squareSize; y++) {
         for (int x = 0; x < squareSize; x++) {
             Vec3 pixelPos = PixelToModelPosition(x, y, squareSize, model.vertices);
@@ -114,6 +140,7 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
             pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
         }
     }
+#endif
 }
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
