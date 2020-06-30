@@ -18,13 +18,6 @@ const char* REQUIRED_EXTENSIONS[] = {
     VK_EXT_DEBUG_UTILS_EXTENSION_NAME
 };
 
-struct UniformBufferObject
-{
-    alignas(16) Mat4 model;
-    alignas(16) Mat4 view;
-    alignas(16) Mat4 proj;
-};
-
 static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                           VkDebugUtilsMessageTypeFlagsEXT messageType,
                                                           const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -37,44 +30,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(VkDebugUtilsMessageSev
     return VK_FALSE;
 }
 
-struct QueueFamilyInfo
-{
-    bool hasGraphicsFamily;
-    uint32_t graphicsFamilyIndex;
-    bool hasPresentFamily;
-    uint32_t presentFamilyIndex;
-};
-
-QueueFamilyInfo GetQueueFamilyInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, LinearAllocator* allocator)
-{
-    QueueFamilyInfo info;
-    info.hasGraphicsFamily = false;
-    info.hasPresentFamily = false;
-
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-
-    DynamicArray<VkQueueFamilyProperties, LinearAllocator> queueFamilies(queueFamilyCount, allocator);
-    queueFamilies.size = queueFamilyCount;
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data);
-
-    for (uint64 i = 0; i < queueFamilies.size; i++) {
-        VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, (uint32_t)i, surface, &presentSupport);
-        if (presentSupport) {
-            info.hasPresentFamily = true;
-            info.presentFamilyIndex = (uint32_t)i;
-        }
-
-        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-            info.hasGraphicsFamily = true;
-            info.graphicsFamilyIndex = (uint32_t)i;
-        }
-    }
-
-    return info;
-}
-
 struct SwapchainSupportInfo
 {
     VkSurfaceCapabilitiesKHR capabilities;
@@ -82,7 +37,8 @@ struct SwapchainSupportInfo
     DynamicArray<VkPresentModeKHR, LinearAllocator> presentModes;
 };
 
-void GetSwapchainSupportInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, SwapchainSupportInfo* supportInfo)
+internal void GetSwapchainSupportInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice,
+                                      SwapchainSupportInfo* supportInfo)
 {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &supportInfo->capabilities);
 
@@ -104,7 +60,7 @@ void GetSwapchainSupportInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevi
     }
 }
 
-VkSurfaceFormatKHR ChooseSwapSurfaceFormat(const Array<VkSurfaceFormatKHR>& availableFormats)
+internal VkSurfaceFormatKHR ChooseSwapSurfaceFormat(const Array<VkSurfaceFormatKHR>& availableFormats)
 {
     for (uint64 i = 0; i < availableFormats.size; i++) {
         if (availableFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
@@ -116,7 +72,7 @@ VkSurfaceFormatKHR ChooseSwapSurfaceFormat(const Array<VkSurfaceFormatKHR>& avai
     return availableFormats[0]; // sloppy fallback
 }
 
-VkExtent2D ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, Vec2Int screenSize)
+internal VkExtent2D ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, Vec2Int screenSize)
 {
     if (capabilities.currentExtent.width != UINT32_MAX) {
         return capabilities.currentExtent;
@@ -135,8 +91,8 @@ VkExtent2D ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, Vec2In
     }
 }
 
-bool IsPhysicalDeviceSuitable(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice,
-                              const Array<const char*> requiredExtensions, LinearAllocator* allocator)
+internal bool IsPhysicalDeviceSuitable(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice,
+                                       const Array<const char*> requiredExtensions, LinearAllocator* allocator)
 {
     QueueFamilyInfo queueFamilyInfo = GetQueueFamilyInfo(surface, physicalDevice, allocator);
     if (!queueFamilyInfo.hasGraphicsFamily || !queueFamilyInfo.hasPresentFamily) {
@@ -184,6 +140,70 @@ bool IsPhysicalDeviceSuitable(VkSurfaceKHR surface, VkPhysicalDevice physicalDev
     }
 
     return true;
+}
+
+internal VkCommandBuffer BeginOneTimeCommands(VkDevice device, VkCommandPool commandPool)
+{
+    VkCommandBufferAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    return commandBuffer;
+}
+
+internal void EndOneTimeCommands(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkCommandBuffer commandBuffer)
+{
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(queue);
+
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+}
+
+QueueFamilyInfo GetQueueFamilyInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, LinearAllocator* allocator)
+{
+    QueueFamilyInfo info;
+    info.hasGraphicsFamily = false;
+    info.hasPresentFamily = false;
+
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+
+    DynamicArray<VkQueueFamilyProperties, LinearAllocator> queueFamilies(queueFamilyCount, allocator);
+    queueFamilies.size = queueFamilyCount;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data);
+
+    for (uint64 i = 0; i < queueFamilies.size; i++) {
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, (uint32_t)i, surface, &presentSupport);
+        if (presentSupport) {
+            info.hasPresentFamily = true;
+            info.presentFamilyIndex = (uint32_t)i;
+        }
+
+        if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            info.hasGraphicsFamily = true;
+            info.graphicsFamilyIndex = (uint32_t)i;
+        }
+    }
+
+    return info;
 }
 
 bool CreateShaderModule(const Array<uint8> code, VkDevice device, VkShaderModule* shaderModule)
@@ -250,40 +270,6 @@ bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyF
     vkBindBufferMemory(device, *buffer, *bufferMemory, 0);
 
     return true;
-}
-
-VkCommandBuffer BeginOneTimeCommands(VkDevice device, VkCommandPool commandPool)
-{
-    VkCommandBufferAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-    return commandBuffer;
-}
-
-void EndOneTimeCommands(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkCommandBuffer commandBuffer)
-{
-    vkEndCommandBuffer(commandBuffer);
-
-    VkSubmitInfo submitInfo = {};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue);
-
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
 void CopyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue queue,

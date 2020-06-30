@@ -7,6 +7,37 @@
 #include <km_common/km_math.h>
 #include <km_common/km_memory.h>
 
+struct QueueFamilyInfo
+{
+    bool hasGraphicsFamily;
+    uint32_t graphicsFamilyIndex;
+    bool hasPresentFamily;
+    uint32_t presentFamilyIndex;
+};
+
+QueueFamilyInfo GetQueueFamilyInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, LinearAllocator* allocator);
+
+bool CreateShaderModule(const Array<uint8> code, VkDevice device, VkShaderModule* shaderModule);
+
+bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryPropertyFlags,
+                  VkDevice device, VkPhysicalDevice physicalDevice, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
+
+void CopyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue queue,
+                VkBuffer src, VkBuffer dst, VkDeviceSize size);
+
+bool CreateImage(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t width, uint32_t height, VkFormat format,
+                 VkImageTiling tiling, VkImageUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags,
+                 VkImage* image, VkDeviceMemory* imageMemory);
+
+void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image, VkFormat format,
+                           VkImageLayout oldLayout, VkImageLayout newLayout);
+
+void CopyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue queue,
+                       VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+
+bool CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags,
+                     VkImageView* imageView);
+
 // Core Vulkan state, Should be initialized once in the entire application
 struct VulkanCore
 {
