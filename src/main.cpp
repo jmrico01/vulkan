@@ -384,6 +384,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
     // Create texture image
     {
+#if 0
         int width, height, channels;
         unsigned char* imageData = stbi_load("data/textures/texture.jpg", &width, &height, &channels, STBI_rgb_alpha);
         if (imageData == nullptr) {
@@ -391,6 +392,10 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             return false;
         }
         defer(stbi_image_free(imageData));
+#endif
+
+        const int width = 256;
+        const int height = 256;
 
         const VkDeviceSize imageSize = width * height * 4;
         VkBuffer stagingBuffer;
@@ -409,7 +414,14 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
         void* data;
         vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
-        MemCopy(data, imageData, imageSize);
+
+        uint32* pixels = (uint32*)data;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                pixels[y * width + x] = 0xffffcccc;
+            }
+        }
+
         vkUnmapMemory(window.device, stagingBufferMemory);
 
         if (!CreateImage(window.device, window.physicalDevice, width, height,
