@@ -337,7 +337,7 @@ bool CreateImage(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t widt
     return true;
 }
 
-void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image, VkFormat format,
+void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image,
                            VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     VkCommandBuffer commandBuffer = BeginOneTimeCommands(device, commandPool);

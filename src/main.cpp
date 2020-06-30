@@ -31,8 +31,95 @@ internal AppState* GetAppState(AppMemory* memory)
     return (AppState*)memory->permanent.data;
 }
 
+internal Vec3 PixelToModelPosition(int x, int y, int squareSize, Array<Vertex> vertices)
+{
+    DEBUG_ASSERT(vertices.size % 3 == 0);
+
+    const Vec2 pixelUv = { (float32)x / squareSize, (float32)y / squareSize };
+
+    int minDistTriangle = -1;
+    float32 minDist = 0.0f;
+    Vec3 minB = Vec3::zero;
+    const int numTriangles = (int)(vertices.size / 3);
+    for (int i = 0; i < numTriangles; i++) {
+        const Vertex v1 = vertices[i * 3];
+        const Vertex v2 = vertices[i * 3 + 1];
+        const Vertex v3 = vertices[i * 3 + 2];
+
+        const Vec3 b = BarycentricCoordinates(pixelUv, v1.uv, v2.uv, v3.uv);
+        bool inside = true;
+        float32 dist = 0.0f;
+        if (0.0f > b.x || b.x > 1.0f) {
+            inside = false;
+            dist += b.x;
+        }
+        if (0.0f > b.y || b.y > 1.0f) {
+            inside = false;
+            dist += b.y;
+        }
+        if (0.0f > b.z || b.z > 1.0f) {
+            inside = false;
+            dist += b.z;
+        }
+        if (inside) {
+            minDistTriangle = i;
+            minB = b;
+            break;
+        }
+        else if (minDistTriangle == -1 || dist < minDist) {
+            minDistTriangle = i;
+            minDist = dist;
+            minB = b;
+        }
+    }
+
+    DEBUG_ASSERT(minDistTriangle != -1);
+    const Vec3 pos1 = vertices[minDistTriangle * 3].pos;
+    const Vec3 pos2 = vertices[minDistTriangle * 3 + 1].pos;
+    const Vec3 pos3 = vertices[minDistTriangle * 3 + 2].pos;
+    return pos1 * minB.x + pos2 * minB.y + pos3 * minB.z;
+}
+
+internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
+{
+    const ObjModel& model = models[modelInd];
+    DEBUG_ASSERT(model.vertices.size % 3 == 0);
+
+    MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
+
+    const uint64 numTriangles = model.vertices.size / 3;
+    for (uint64 i = 0; i < numTriangles; i++) {
+        const Vertex v1 = vertices[i * 3];
+        const Vertex v2 = vertices[i * 3 + 1];
+        const Vertex v3 = vertices[i * 3 + 2];
+
+        Vec2 min = {
+            MinFloat32(v1.uv.x, MinFloat32(v2.uv.x, v3.uv.x)),
+            MinFloat32(v1.uv.y, MinFloat32(v2.uv.y, v3.uv.y))
+        };
+    }
+
+    for (int y = 0; y < squareSize; y++) {
+        for (int x = 0; x < squareSize; x++) {
+            Vec3 pixelPos = PixelToModelPosition(x, y, squareSize, model.vertices);
+
+            uint8 r = 0xcc;
+            uint8 g = 0xcc;
+            uint8 b = 0xff;
+            uint8 a = 0xff;
+
+            r = (uint8)(pixelPos.x * 255.0f);
+            g = (uint8)(pixelPos.y * 255.0f);
+            b = (uint8)(pixelPos.z * 255.0f);
+            pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
+        }
+    }
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
+    UNREFERENCED_PARAMETER(audio);
+
     AppState* appState = GetAppState(memory);
     const Vec2Int screenSize = {
         (int)vulkanState.swapchain.extent.width,
@@ -382,6 +469,16 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         }
     }
 
+    LoadObjResult obj;
+    if (!LoadObj(ToString("data/models/reference-scene.obj"), &obj, &allocator)) {
+        LOG_ERROR("Failed to load reference scene .obj\n");
+        return false;
+    }
+    uint32_t totalVertices = 0;
+    for (uint64 i = 0; i < obj.models.size; i++) {
+        totalVertices += (uint32_t)obj.models[i].vertices.size;
+    }
+
     // Create texture image
     {
 #if 0
@@ -394,10 +491,8 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         defer(stbi_image_free(imageData));
 #endif
 
-        const int width = 256;
-        const int height = 256;
-
-        const VkDeviceSize imageSize = width * height * 4;
+        const int squareSize = 512;
+        const VkDeviceSize imageSize = squareSize * squareSize * 4;
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
         if (!CreateBuffer(imageSize,
@@ -415,16 +510,11 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         void* data;
         vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
 
-        uint32* pixels = (uint32*)data;
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                pixels[y * width + x] = 0xffffcccc;
-            }
-        }
+        CalculateLightmapForModel(obj.models, 3, squareSize, (uint32*)data);
 
         vkUnmapMemory(window.device, stagingBufferMemory);
 
-        if (!CreateImage(window.device, window.physicalDevice, width, height,
+        if (!CreateImage(window.device, window.physicalDevice, squareSize, squareSize,
                          VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -434,13 +524,11 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         }
 
         TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
-                              VK_FORMAT_R8G8B8A8_SRGB,
                               VK_IMAGE_LAYOUT_UNDEFINED,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
-                          stagingBuffer, app->textureImage, width, height);
+                          stagingBuffer, app->textureImage, squareSize, squareSize);
         TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
-                              VK_FORMAT_R8G8B8A8_SRGB,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -479,16 +567,6 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             LOG_ERROR("vkCreateSampler failed\n");
             return false;
         }
-    }
-
-    LoadObjResult obj;
-    if (!LoadObj(ToString("data/models/reference-scene.obj"), &obj, &allocator)) {
-        LOG_ERROR("Failed to load reference scene .obj\n");
-        return false;
-    }
-    uint32_t totalVertices = 0;
-    for (uint64 i = 0; i < obj.models.size; i++) {
-        totalVertices += (uint32_t)obj.models[i].vertices.size;
     }
 
     // Create vertex buffer

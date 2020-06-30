@@ -29,7 +29,7 @@ bool CreateImage(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t widt
                  VkImageTiling tiling, VkImageUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags,
                  VkImage* image, VkDeviceMemory* imageMemory);
 
-void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image, VkFormat format,
+void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image,
                            VkImageLayout oldLayout, VkImageLayout newLayout);
 
 void CopyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue queue,

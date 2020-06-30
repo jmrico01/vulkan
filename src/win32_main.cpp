@@ -449,8 +449,11 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             LOG_ERROR("Failed to acquire swapchain image\n");
         }
 
-        // TODO don't ignore the return value. but also how do we cancel the frame cleanly?
         bool shouldRender = AppUpdateAndRender(vulkanState, imageIndex, *newInput, lastElapsed, &appMemory, &appAudio);
+        if (!shouldRender) {
+            // TODO lmao, plz fix... how do we cancel the frame cleanly?
+            continue;
+        }
 
         // TODO not sure what the split in Vulkan rendering responsibility should be between
         // the OS and game layers...
@@ -478,9 +481,9 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
             int64 timerElapsed = timerEnd.QuadPart - timerLast.QuadPart;
             lastElapsed = (float32)timerElapsed / timerFreq;
-            float32 elapsedMs = lastElapsed * 1000.0f;
-            int64 cyclesElapsed = cyclesEnd - cyclesLast;
-            float64 megaCyclesElapsed = (float64)cyclesElapsed / 1000000.0f;
+            // float32 elapsedMs = lastElapsed * 1000.0f;
+            // int64 cyclesElapsed = cyclesEnd - cyclesLast;
+            // float64 megaCyclesElapsed = (float64)cyclesElapsed / 1000000.0f;
             // LOG_INFO("elapsed %.03f ms | %.03f MC\n", elapsedMs, megaCyclesElapsed);
 
             timerLast = timerEnd;
