@@ -31,55 +31,6 @@ internal AppState* GetAppState(AppMemory* memory)
     return (AppState*)memory->permanent.data;
 }
 
-internal Vec3 PixelToModelPosition(int x, int y, int squareSize, Array<Vertex> vertices)
-{
-    DEBUG_ASSERT(vertices.size % 3 == 0);
-
-    const Vec2 pixelUv = { (float32)x / squareSize, (float32)y / squareSize };
-
-    int minDistTriangle = -1;
-    float32 minDist = 0.0f;
-    Vec3 minB = Vec3::zero;
-    const int numTriangles = (int)(vertices.size / 3);
-    for (int i = 0; i < numTriangles; i++) {
-        const Vertex v1 = vertices[i * 3];
-        const Vertex v2 = vertices[i * 3 + 1];
-        const Vertex v3 = vertices[i * 3 + 2];
-
-        const Vec3 b = BarycentricCoordinates(pixelUv, v1.uv, v2.uv, v3.uv);
-        bool inside = true;
-        float32 dist = 0.0f;
-        if (0.0f > b.x || b.x > 1.0f) {
-            inside = false;
-            dist += b.x;
-        }
-        if (0.0f > b.y || b.y > 1.0f) {
-            inside = false;
-            dist += b.y;
-        }
-        if (0.0f > b.z || b.z > 1.0f) {
-            inside = false;
-            dist += b.z;
-        }
-        if (inside) {
-            minDistTriangle = i;
-            minB = b;
-            break;
-        }
-        else if (minDistTriangle == -1 || dist < minDist) {
-            minDistTriangle = i;
-            minDist = dist;
-            minB = b;
-        }
-    }
-
-    DEBUG_ASSERT(minDistTriangle != -1);
-    const Vec3 pos1 = vertices[minDistTriangle * 3].pos;
-    const Vec3 pos2 = vertices[minDistTriangle * 3 + 1].pos;
-    const Vec3 pos3 = vertices[minDistTriangle * 3 + 2].pos;
-    return pos1 * minB.x + pos2 * minB.y + pos3 * minB.z;
-}
-
 internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
 {
     const ObjModel& model = models[modelInd];
@@ -123,24 +74,6 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
             }
         }
     }
-
-#if 0
-    for (int y = 0; y < squareSize; y++) {
-        for (int x = 0; x < squareSize; x++) {
-            Vec3 pixelPos = PixelToModelPosition(x, y, squareSize, model.vertices);
-
-            uint8 r = 0xcc;
-            uint8 g = 0xcc;
-            uint8 b = 0xff;
-            uint8 a = 0xff;
-
-            r = (uint8)(pixelPos.x * 255.0f);
-            g = (uint8)(pixelPos.y * 255.0f);
-            b = (uint8)(pixelPos.z * 255.0f);
-            pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
-        }
-    }
-#endif
 }
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
