@@ -42,6 +42,13 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
             modelEndTriangleInds.Append(triangles.size);
             break;
         }
+        else if (next[next.size - 1] == '\r') {
+            next.size--;
+            if (next.size == 0) {
+                modelEndTriangleInds.Append(triangles.size);
+                break;
+            }
+        }
 
         if (next.size < 2) continue;
 
@@ -60,6 +67,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
             Vec3* p = positions.Append();
             int numElements;
             if (!StringToElementArray(next, ' ', false, StringToFloat32, 3, p->e, &numElements)) {
+                LOG_ERROR("Failed to load vertex position with value: %.*s\n", (int)next.size, next.data);
                 return false;
             }
             if (numElements != 3) {
@@ -73,6 +81,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
             Vec2* uv = uvs.Append();
             int numElements;
             if (!StringToElementArray(next, ' ', false, StringToFloat32, 2, uv->e, &numElements)) {
+                LOG_ERROR("Failed to load vertex UV with value: %.*s\n", (int)next.size, next.data);
                 return false;
             }
             if (numElements != 2) {
@@ -86,6 +95,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
             FaceIndices indices[4];
             int numElements;
             if (!StringToElementArray(next, ' ', false, StringToObjFaceInds, 4, indices, &numElements)) {
+                LOG_ERROR("Failed to load face with value: %.*s\n", (int)next.size, next.data);
                 return false;
             }
 

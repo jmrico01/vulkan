@@ -122,6 +122,10 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
 {
     const ObjModel& model = models[modelInd];
 
+    if (modelInd != 7) {
+        MemSet(pixels, 0x3, squareSize * squareSize * sizeof(uint32));
+        return;
+    }
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
     Vec3 hemisphereSamples[LIGHTMAP_NUM_HEMISPHERE_SAMPLES];
