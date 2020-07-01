@@ -18,5 +18,6 @@ void main() {
 
 	vec3 finalColor = (colorAmbient + colorLight * lightBounce) * texColor;
 
-    outColor = vec4(finalColor, 1.0);
+    // outColor = vec4(finalColor, 1.0);
+    outColor = texture(texSampler, inUv);
 }

@@ -25,15 +25,94 @@ struct UniformBufferObject
     alignas(16) Mat4 proj;
 };
 
+struct LightRect
+{
+    Vec3 origin;
+    Vec3 width;
+    Vec3 height;
+    Vec3 color;
+};
+
 internal AppState* GetAppState(AppMemory* memory)
 {
     DEBUG_ASSERT(sizeof(AppState) < memory->permanent.size);
     return (AppState*)memory->permanent.data;
 }
 
-internal Vec3 RaycastColor(Vec3 pos, Vec3 normal, Array<ObjModel> models)
+void GenerateHemisphereSamples(int n, Vec3* samples)
 {
-    return normal;
+    for (int i = 0; i < n; i++) {
+        Vec3 dir;
+        do {
+            dir.x = RandFloat32();
+            dir.y = RandFloat32(-1.0f, 1.0f);
+            dir.z = RandFloat32(-1.0f, 1.0f);
+        } while (MagSq(dir) > 1.0f);
+
+        samples[i] = Normalize(dir);
+    }
+}
+
+internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 normal, Array<ObjModel> models)
+{
+    UNREFERENCED_PARAMETER(models);
+
+    const LightRect LIGHT_RECTS[] = {
+        {
+            .origin = { 4.0f, 5.4f, 2.24f },
+            .width = { -2.0f, 0.0f, 0.0f },
+            .height = { 0.0f, 0.0f, -2.2f },
+            .color = Vec3 { 1.0f, 0.0f, 0.0f }
+        },
+        {
+            .origin = { 2.0f, 2.42f, 2.24f },
+            .width = { 2.0f, 0.0f, 0.0f },
+            .height = { 0.0f, 0.0f, -2.2f },
+            .color = Vec3 { 0.0f, 0.0f, 1.0f }
+        },
+    };
+
+    const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
+    const float32 originOffset = 0.0f;
+    const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
+
+    Vec3 outputColor = ambient;
+    for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
+        const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
+        const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
+        const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
+        const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
+        const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
+
+        float32 lightIntensity = 0.0f;
+        for (int i = 0; i < numSamples; i++) {
+            const Vec3 sampleNormal = xToNormalRot * samples[i];
+            const Vec3 origin = pos + sampleNormal * originOffset;
+
+            float32 intersectA;
+            if (!RayPlaneIntersection(origin, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &intersectA)) {
+                continue;
+            }
+            if (intersectA < 0.0f) {
+                continue;
+            }
+
+            const Vec3 intersect = origin + intersectA * sampleNormal;
+            const Vec3 rectOriginToIntersect = intersect - LIGHT_RECTS[l].origin;
+            const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
+            const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
+            if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
+                lightIntensity += 1.0f / numSamples;
+            }
+        }
+
+        outputColor += lightIntensity * LIGHT_RECTS[l].color;
+    }
+
+    outputColor.r = ClampFloat32(outputColor.r, 0.0f, 1.0f);
+    outputColor.g = ClampFloat32(outputColor.g, 0.0f, 1.0f);
+    outputColor.b = ClampFloat32(outputColor.b, 0.0f, 1.0f);
+    return outputColor;
 }
 
 internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
@@ -42,6 +121,10 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
     DEBUG_ASSERT(model.vertices.size % 3 == 0);
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
+
+    const int NUM_HEMISPHERE_SAMPLES = 64;
+    Vec3 hemisphereSamples[NUM_HEMISPHERE_SAMPLES];
+    GenerateHemisphereSamples(NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
 
     const uint64 numTriangles = model.vertices.size / 3;
     for (uint64 i = 0; i < numTriangles; i++) {
@@ -59,6 +142,7 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
         };
         const Vec2Int minPixel = { (int)(min.x * squareSize), (int)(min.y * squareSize) };
         const Vec2Int maxPixel = { (int)(max.x * squareSize), (int)(max.y * squareSize) };
+        // TODO this might bleed out into other triangles, so gotta be careful. rethink how to do this.
         const float32 MARGIN_BARYCENTRIC = 0.0f;
         const float32 B_MIN = -MARGIN_BARYCENTRIC;
         const float32 B_MAX = 1.0f + MARGIN_BARYCENTRIC;
@@ -71,11 +155,10 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
                     const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
                     const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
 
-                    const Vec3 raycastColor = RaycastColor(pos, normal, models);
-
-                    uint8 r = (uint8)(raycastColor.x * 255.0f);
-                    uint8 g = (uint8)(raycastColor.y * 255.0f);
-                    uint8 b = (uint8)(raycastColor.z * 255.0f);
+                    Vec3 raycastColor = RaycastColor(NUM_HEMISPHERE_SAMPLES, hemisphereSamples, pos, normal, models);
+                    uint8 r = (uint8)(raycastColor.r * 255.0f);
+                    uint8 g = (uint8)(raycastColor.g * 255.0f);
+                    uint8 b = (uint8)(raycastColor.b * 255.0f);
                     uint8 a = 0xff;
                     pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
                 }
@@ -191,6 +274,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
 APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 {
+    LOG_INFO("Loading Vulkan app state\n");
+
     const VulkanWindow& window = vulkanState.window;
     const VulkanSwapchain& swapchain = vulkanState.swapchain;
 
@@ -447,67 +532,56 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         totalVertices += (uint32_t)obj.models[i].vertices.size;
     }
 
-    // Create texture image
+    // Create textures
     {
-#if 0
-        int width, height, channels;
-        unsigned char* imageData = stbi_load("data/textures/texture.jpg", &width, &height, &channels, STBI_rgb_alpha);
-        if (imageData == nullptr) {
-            LOG_ERROR("Failed to load texture\n");
-            return false;
-        }
-        defer(stbi_image_free(imageData));
-#endif
-
         const int squareSize = 512;
-        const VkDeviceSize imageSize = squareSize * squareSize * 4;
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingBufferMemory;
-        if (!CreateBuffer(imageSize,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for staging buffer\n");
-            return false;
-        }
-        defer({
-                  vkDestroyBuffer(window.device, stagingBuffer, nullptr);
-                  vkFreeMemory(window.device, stagingBufferMemory, nullptr);
-              });
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            VulkanImage* image = app->textures.Append();
+            if (!CreateImage(window.device, window.physicalDevice, squareSize, squareSize,
+                             VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &image->image, &image->memory)) {
+                LOG_ERROR("CreateImage failed\n");
+                return false;
+            }
 
-        void* data;
-        vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
+            const VkDeviceSize imageSize = squareSize * squareSize * 4;
+            VkBuffer stagingBuffer;
+            VkDeviceMemory stagingBufferMemory;
+            if (!CreateBuffer(imageSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+                LOG_ERROR("CreateBuffer failed for staging buffer\n");
+                return false;
+            }
+            defer({
+                      vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+                      vkFreeMemory(window.device, stagingBufferMemory, nullptr);
+                  });
 
-        CalculateLightmapForModel(obj.models, 3, squareSize, (uint32*)data);
+            void* data;
+            vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
 
-        vkUnmapMemory(window.device, stagingBufferMemory);
+            CalculateLightmapForModel(obj.models, (int)i, squareSize, (uint32*)data);
 
-        if (!CreateImage(window.device, window.physicalDevice, squareSize, squareSize,
-                         VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                         &app->textureImage, &app->textureImageMemory)) {
-            LOG_ERROR("CreateImage failed\n");
-            return false;
-        }
+            vkUnmapMemory(window.device, stagingBufferMemory);
 
-        TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
-                              VK_IMAGE_LAYOUT_UNDEFINED,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
-                          stagingBuffer, app->textureImage, squareSize, squareSize);
-        TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, app->textureImage,
-                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
+                                  VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
+                              stagingBuffer, image->image, squareSize, squareSize);
+            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    }
-
-    // Create texture image view
-    {
-        if (!CreateImageView(window.device, app->textureImage, VK_FORMAT_R8G8B8A8_SRGB,
-                             VK_IMAGE_ASPECT_COLOR_BIT, &app->textureImageView)) {
-            LOG_ERROR("CreateImageView failed\n");
-            return false;
+            if (!CreateImageView(window.device, image->image, VK_FORMAT_R8G8B8A8_SRGB,
+                                 VK_IMAGE_ASPECT_COLOR_BIT, &image->view)) {
+                LOG_ERROR("CreateImageView failed\n");
+                return false;
+            }
         }
     }
 
@@ -604,7 +678,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
         poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = (uint32_t)obj.models.size;
 
         if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->descriptorPool) != VK_SUCCESS) {
             LOG_ERROR("vkCreateDescriptorPool failed\n");
@@ -614,45 +688,54 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
     // Create descriptor set
     {
+        FixedArray<VkDescriptorSetLayout, VulkanAppState::MAX_TEXTURES> layouts;
+        layouts.Clear();
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            layouts.Append(app->descriptorSetLayout);
+        }
+
         VkDescriptorSetAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = app->descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &app->descriptorSetLayout;
+        allocInfo.descriptorSetCount = (uint32_t)obj.models.size;
+        allocInfo.pSetLayouts = layouts.data;
 
-        if (vkAllocateDescriptorSets(window.device, &allocInfo, &app->descriptorSet) != VK_SUCCESS) {
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, app->descriptorSets.data) != VK_SUCCESS) {
             LOG_ERROR("vkAllocateDescriptorSets failed\n");
             return false;
         }
+        app->descriptorSets.size = obj.models.size;
 
-        VkDescriptorBufferInfo bufferInfo = {};
-        bufferInfo.buffer = app->uniformBuffer;
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(UniformBufferObject);
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            VkDescriptorBufferInfo bufferInfo = {};
+            bufferInfo.buffer = app->uniformBuffer;
+            bufferInfo.offset = 0;
+            bufferInfo.range = sizeof(UniformBufferObject);
 
-        VkDescriptorImageInfo imageInfo = {};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = app->textureImageView;
-        imageInfo.sampler = app->textureSampler;
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = app->textures[i].view;
+            imageInfo.sampler = app->textureSampler;
 
-        VkWriteDescriptorSet descriptorWrites[2] = {};
-        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[0].dstSet = app->descriptorSet;
-        descriptorWrites[0].dstBinding = 0;
-        descriptorWrites[0].dstArrayElement = 0;
-        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrites[0].descriptorCount = 1;
-        descriptorWrites[0].pBufferInfo = &bufferInfo;
+            VkWriteDescriptorSet descriptorWrites[2] = {};
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = app->descriptorSets[i];
+            descriptorWrites[0].dstBinding = 0;
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorCount = 1;
+            descriptorWrites[0].pBufferInfo = &bufferInfo;
 
-        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[1].dstSet = app->descriptorSet;
-        descriptorWrites[1].dstBinding = 1;
-        descriptorWrites[1].dstArrayElement = 0;
-        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrites[1].descriptorCount = 1;
-        descriptorWrites[1].pImageInfo = &imageInfo;
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = app->descriptorSets[i];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &imageInfo;
 
-        vkUpdateDescriptorSets(window.device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
+            vkUpdateDescriptorSets(window.device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
+        }
     }
 
     // Create command buffers
@@ -705,10 +788,15 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             const VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
-            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
-                                    &app->descriptorSet, 0, nullptr);
+            uint32_t vertexStart = 0;
+            for (uint64 j = 0; j < obj.models.size; j++) {
+                vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
+                                        &app->descriptorSets[j], 0, nullptr);
 
-            vkCmdDraw(buffer, totalVertices, 1, 0, 0);
+                uint32_t numVertices = (uint32_t)obj.models[j].vertices.size;
+                vkCmdDraw(buffer, numVertices, 1, vertexStart, 0);
+                vertexStart += numVertices;
+            }
 
             vkCmdEndRenderPass(buffer);
 
@@ -724,9 +812,12 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
 APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 {
+    LOG_INFO("Unloading Vulkan app state\n");
+
     const VkDevice& device = vulkanState.window.device;
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
 
+    app->descriptorSets.Clear();
     vkDestroyDescriptorPool(device, app->descriptorPool, nullptr);
 
     vkDestroyBuffer(device, app->uniformBuffer, nullptr);
@@ -735,10 +826,15 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
     vkFreeMemory(device, app->vertexBufferMemory, nullptr);
 
     vkDestroySampler(device, app->textureSampler, nullptr);
-    vkDestroyImageView(device, app->textureImageView, nullptr);
-    vkDestroyImage(device, app->textureImage, nullptr);
-    vkFreeMemory(device, app->textureImageMemory, nullptr);
 
+    for (uint64 i = 0; i < app->textures.size; i++) {
+        vkDestroyImageView(device, app->textures[i].view, nullptr);
+        vkDestroyImage(device, app->textures[i].image, nullptr);
+        vkFreeMemory(device, app->textures[i].memory, nullptr);
+    }
+    app->textures.Clear();
+
+    app->commandBuffers.Clear();
     vkDestroyCommandPool(device, app->commandPool, nullptr);
     vkDestroyPipeline(device, app->graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, app->pipelineLayout, nullptr);

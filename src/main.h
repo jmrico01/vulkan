@@ -11,6 +11,13 @@
 
 #include "vulkan.h"
 
+struct VulkanImage
+{
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+};
+
 struct VulkanAppState
 {
     VkDescriptorSetLayout descriptorSetLayout;
@@ -20,9 +27,8 @@ struct VulkanAppState
     VkCommandPool commandPool;
     FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
 
-    VkImage textureImage;
-    VkDeviceMemory textureImageMemory;
-    VkImageView textureImageView;
+    static const uint64 MAX_TEXTURES = 64;
+    FixedArray<VulkanImage, MAX_TEXTURES> textures;
     VkSampler textureSampler;
 
     VkBuffer vertexBuffer;
@@ -31,7 +37,7 @@ struct VulkanAppState
     VkDeviceMemory uniformBufferMemory;
 
     VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
+    FixedArray<VkDescriptorSet, MAX_TEXTURES> descriptorSets;
 };
 
 struct AppState
