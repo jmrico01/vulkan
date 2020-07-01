@@ -75,6 +75,7 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
         },
     };
 
+    // NOTE this will do undefined things with "up" direction
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const float32 originOffset = 0.0f;
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
@@ -89,7 +90,7 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
 
         float32 lightIntensity = 0.0f;
         for (int i = 0; i < numSamples; i++) {
-            const Vec3 sampleNormal = xToNormalRot * samples[i]; // NOTE this will do undefined things with "up" direction
+            const Vec3 sampleNormal = xToNormalRot * samples[i];
             const Vec3 origin = pos + sampleNormal * originOffset;
 
             float32 intersectA;
@@ -123,10 +124,11 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
     const ObjModel& model = models[modelInd];
 
     if (modelInd != 7) {
-        MemSet(pixels, 0x3, squareSize * squareSize * sizeof(uint32));
-        return;
+        // MemSet(pixels, 0x10, squareSize * squareSize * sizeof(uint32));
+        // return;
     }
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
+    const int LIGHTMAP_PIXEL_MARGIN = 1;
 
     Vec3 hemisphereSamples[LIGHTMAP_NUM_HEMISPHERE_SAMPLES];
     GenerateHemisphereSamples(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
@@ -136,37 +138,59 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
         const Vertex v2 = model.triangles[i].v[1];
         const Vertex v3 = model.triangles[i].v[2];
 
-        const Vec2 min = {
+        const Vec2 minUv = {
             MinFloat32(v1.uv.x, MinFloat32(v2.uv.x, v3.uv.x)),
             MinFloat32(v1.uv.y, MinFloat32(v2.uv.y, v3.uv.y))
         };
-        const Vec2 max = {
+        const Vec2 maxUv = {
             MaxFloat32(v1.uv.x, MaxFloat32(v2.uv.x, v3.uv.x)),
             MaxFloat32(v1.uv.y, MaxFloat32(v2.uv.y, v3.uv.y))
         };
-        const Vec2Int minPixel = { (int)(min.x * squareSize), (int)(min.y * squareSize) };
-        const Vec2Int maxPixel = { (int)(max.x * squareSize), (int)(max.y * squareSize) };
-        // TODO this might bleed out into other triangles, so gotta be careful. rethink how to do this.
-        const float32 MARGIN_BARYCENTRIC = 0.0f;
-        const float32 B_MIN = -MARGIN_BARYCENTRIC;
-        const float32 B_MAX = 1.0f + MARGIN_BARYCENTRIC;
+        const int minPixelY = MaxInt((int)(minUv.y * squareSize) - LIGHTMAP_PIXEL_MARGIN, 0);
+        const int maxPixelY = MinInt((int)(maxUv.y * squareSize) + LIGHTMAP_PIXEL_MARGIN, squareSize);
+        for (int y = minPixelY; y < maxPixelY; y++) {
+            const float32 uvY = (float32)y / squareSize;
+            const float32 t1 = (uvY - v1.uv.y) / (v2.uv.y - v1.uv.y);
+            const float32 x1 = v1.uv.x + (v2.uv.x - v1.uv.x) * t1;
+            const float32 t2 = (uvY - v2.uv.y) / (v3.uv.y - v2.uv.y);
+            const float32 x2 = v2.uv.x + (v3.uv.x - v2.uv.x) * t2;
+            const float32 t3 = (uvY - v3.uv.y) / (v1.uv.y - v3.uv.y);
+            const float32 x3 = v3.uv.x + (v1.uv.x - v3.uv.x) * t3;
+            float32 minX = maxUv.x;
+            if (x1 >= minUv.x && x1 < minX) {
+                minX = x1;
+            }
+            if (x2 >= minUv.x && x2 < minX) {
+                minX = x2;
+            }
+            if (x3 >= minUv.x && x3 < minX) {
+                minX = x3;
+            }
+            float32 maxX = minUv.x;
+            if (x1 <= maxUv.x && x1 > maxX) {
+                maxX = x1;
+            }
+            if (x2 <= maxUv.x && x2 > maxX) {
+                maxX = x2;
+            }
+            if (x3 <= maxUv.x && x3 > maxX) {
+                maxX = x3;
+            }
+            const int minPixelX = MaxInt((int)(minX * squareSize) - LIGHTMAP_PIXEL_MARGIN, 0);
+            const int maxPixelX = MinInt((int)(maxX * squareSize) + LIGHTMAP_PIXEL_MARGIN, squareSize);
+            for (int x = minPixelX; x < maxPixelX; x++) {
+                const float32 uvX = (float32)x / squareSize;
+                const Vec3 bC = BarycentricCoordinates(Vec2 { uvX, uvY }, v1.uv, v2.uv, v3.uv);
+                const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
+                const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
 
-        for (int y = minPixel.y; y < maxPixel.y; y++) {
-            for (int x = minPixel.x; x < maxPixel.x; x++) {
-                const Vec2 uv = { (float32)x / squareSize, (float32)y / squareSize };
-                const Vec3 bC = BarycentricCoordinates(uv, v1.uv, v2.uv, v3.uv);
-                if (B_MIN <= bC.x && bC.x <= B_MAX && B_MIN <= bC.y && bC.y <= B_MAX && B_MIN <= bC.z && bC.z <= B_MAX) {
-                    const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
-                    const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
-
-                    Vec3 raycastColor = RaycastColor(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples,
-                                                     pos, normal, models);
-                    uint8 r = (uint8)(raycastColor.r * 255.0f);
-                    uint8 g = (uint8)(raycastColor.g * 255.0f);
-                    uint8 b = (uint8)(raycastColor.b * 255.0f);
-                    uint8 a = 0xff;
-                    pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
-                }
+                const Vec3 raycastColor = RaycastColor(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples,
+                                                       pos, normal, models);
+                uint8 r = (uint8)(raycastColor.r * 255.0f);
+                uint8 g = (uint8)(raycastColor.g * 255.0f);
+                uint8 b = (uint8)(raycastColor.b * 255.0f);
+                uint8 a = 0xff;
+                pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
             }
         }
     }
