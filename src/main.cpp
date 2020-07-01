@@ -18,6 +18,9 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 128.0f;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+
 struct UniformBufferObject
 {
     alignas(16) Mat4 model;
@@ -86,7 +89,7 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
 
         float32 lightIntensity = 0.0f;
         for (int i = 0; i < numSamples; i++) {
-            const Vec3 sampleNormal = xToNormalRot * samples[i];
+            const Vec3 sampleNormal = xToNormalRot * samples[i]; // NOTE this will do undefined things with "up" direction
             const Vec3 origin = pos + sampleNormal * originOffset;
 
             float32 intersectA;
@@ -118,19 +121,16 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
 internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
 {
     const ObjModel& model = models[modelInd];
-    DEBUG_ASSERT(model.vertices.size % 3 == 0);
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
-    const int NUM_HEMISPHERE_SAMPLES = 64;
-    Vec3 hemisphereSamples[NUM_HEMISPHERE_SAMPLES];
-    GenerateHemisphereSamples(NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
+    Vec3 hemisphereSamples[LIGHTMAP_NUM_HEMISPHERE_SAMPLES];
+    GenerateHemisphereSamples(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
 
-    const uint64 numTriangles = model.vertices.size / 3;
-    for (uint64 i = 0; i < numTriangles; i++) {
-        const Vertex v1 = model.vertices[i * 3];
-        const Vertex v2 = model.vertices[i * 3 + 1];
-        const Vertex v3 = model.vertices[i * 3 + 2];
+    for (uint64 i = 0; i < model.triangles.size; i++) {
+        const Vertex v1 = model.triangles[i].v[0];
+        const Vertex v2 = model.triangles[i].v[1];
+        const Vertex v3 = model.triangles[i].v[2];
 
         const Vec2 min = {
             MinFloat32(v1.uv.x, MinFloat32(v2.uv.x, v3.uv.x)),
@@ -155,7 +155,8 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
                     const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
                     const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
 
-                    Vec3 raycastColor = RaycastColor(NUM_HEMISPHERE_SAMPLES, hemisphereSamples, pos, normal, models);
+                    Vec3 raycastColor = RaycastColor(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples,
+                                                     pos, normal, models);
                     uint8 r = (uint8)(raycastColor.r * 255.0f);
                     uint8 g = (uint8)(raycastColor.g * 255.0f);
                     uint8 b = (uint8)(raycastColor.b * 255.0f);
@@ -527,16 +528,20 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         LOG_ERROR("Failed to load reference scene .obj\n");
         return false;
     }
-    uint32_t totalVertices = 0;
-    for (uint64 i = 0; i < obj.models.size; i++) {
-        totalVertices += (uint32_t)obj.models[i].vertices.size;
-    }
 
     // Create textures
     {
-        const int squareSize = 512;
         for (uint64 i = 0; i < obj.models.size; i++) {
             VulkanImage* image = app->textures.Append();
+
+            float32 surfaceArea = 0.0f;
+            for (int j = 0; j < obj.models[i].triangles.size; j++) {
+                const MeshTriangle& triangle = obj.models[i].triangles[j];
+                surfaceArea += TriangleArea(triangle.v[0].pos, triangle.v[1].pos, triangle.v[2].pos);
+            }
+
+            const int size = (int)(sqrt(surfaceArea) * LIGHTMAP_RESOLUTION_PER_WORLD_UNIT);
+            const int squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
             if (!CreateImage(window.device, window.physicalDevice, squareSize, squareSize,
                              VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -615,6 +620,10 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
     // but doesn't really need to be recreated with the swapchain
     {
+        uint32_t totalVertices = 0;
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            totalVertices += (uint32_t)obj.models[i].triangles.size * 3;
+        }
         VkDeviceSize vertexBufferSize = totalVertices * sizeof(Vertex);
 
         VkBuffer stagingBuffer;
@@ -640,8 +649,8 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
         uint64 offset = 0;
         for (uint64 i = 0; i < obj.models.size; i++) {
-            const uint64 numBytes = obj.models[i].vertices.size * sizeof(Vertex);
-            MemCopy((char*)data + offset, obj.models[i].vertices.data, numBytes);
+            const uint64 numBytes = obj.models[i].triangles.size * sizeof(MeshTriangle);
+            MemCopy((char*)data + offset, obj.models[i].triangles.data, numBytes);
             offset += numBytes;
         }
         vkUnmapMemory(window.device, stagingBufferMemory);
@@ -793,7 +802,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
                 vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
                                         &app->descriptorSets[j], 0, nullptr);
 
-                uint32_t numVertices = (uint32_t)obj.models[j].vertices.size;
+                uint32_t numVertices = (uint32_t)obj.models[j].triangles.size * 3;
                 vkCmdDraw(buffer, numVertices, 1, vertexStart, 0);
                 vertexStart += numVertices;
             }

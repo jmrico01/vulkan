@@ -12,9 +12,14 @@ struct Vertex
     Vec2 uv;
 };
 
+struct MeshTriangle
+{
+    Vertex v[3];
+};
+
 struct ObjModel
 {
-    Array<Vertex> vertices;
+    Array<MeshTriangle> triangles;
 };
 
 struct LoadObjResult

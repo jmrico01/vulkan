@@ -27,8 +27,8 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
 
     DynamicArray<Vec3, LinearAllocator> positions(allocator);
     DynamicArray<Vec2, LinearAllocator> uvs(allocator);
-    DynamicArray<Vertex, LinearAllocator> vertices(allocator);
-    DynamicArray<uint64, LinearAllocator> modelEndVertexInds(allocator);
+    DynamicArray<MeshTriangle, LinearAllocator> triangles(allocator);
+    DynamicArray<uint64, LinearAllocator> modelEndTriangleInds(allocator);
 
     string fileString = {
         .size = result->file.size,
@@ -39,7 +39,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
     while (true) {
         next = NextSplitElement(&fileString, '\n');
         if (next.size == 0) {
-            modelEndVertexInds.Append(vertices.size);
+            modelEndTriangleInds.Append(triangles.size);
             break;
         }
 
@@ -50,7 +50,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
                 firstModel = false;
             }
             else {
-                modelEndVertexInds.Append(vertices.size);
+                modelEndTriangleInds.Append(triangles.size);
             }
         }
         else if (next[0] == 'v' && next[1] == ' ') {
@@ -91,30 +91,45 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
 
             // NOTE obj files store faces in counter-clockwise order, but we want to return clockwise
             if (numElements == 3) {
-                const Vec3 pos1 = positions[indices[0].pos - 1];
-                const Vec3 pos2 = positions[indices[2].pos - 1];
-                const Vec3 pos3 = positions[indices[1].pos - 1];
-                const Vec3 normal = CalculateTriangleUnitNormal(pos1, pos2, pos3);
+                MeshTriangle* triangle = triangles.Append();
+                triangle->v[0].pos = positions[indices[0].pos - 1];
+                triangle->v[0].uv = uvs[indices[0].uv - 1];
+                triangle->v[1].pos = positions[indices[2].pos - 1];
+                triangle->v[1].uv = uvs[indices[2].uv - 1];
+                triangle->v[2].pos = positions[indices[1].pos - 1];
+                triangle->v[2].uv = uvs[indices[1].uv - 1];
 
-                vertices.Append({ .pos = pos1, .normal = normal, .uv = uvs[indices[0].uv - 1] });
-                vertices.Append({ .pos = pos2, .normal = normal, .uv = uvs[indices[2].uv - 1] });
-                vertices.Append({ .pos = pos3, .normal = normal, .uv = uvs[indices[1].uv - 1] });
+                const Vec3 normal = CalculateTriangleUnitNormal(triangle->v[0].pos, triangle->v[1].pos, triangle->v[2].pos);
+                triangle->v[0].normal = normal;
+                triangle->v[1].normal = normal;
+                triangle->v[2].normal = normal;
             }
             else if (numElements == 4) {
-                const Vec3 pos1 = positions[indices[0].pos - 1];
-                const Vec3 pos2 = positions[indices[3].pos - 1];
-                const Vec3 pos3 = positions[indices[2].pos - 1];
-                const Vec3 pos4 = positions[indices[2].pos - 1];
-                const Vec3 pos5 = positions[indices[1].pos - 1];
-                const Vec3 pos6 = positions[indices[0].pos - 1];
-                const Vec3 normal = CalculateTriangleUnitNormal(pos1, pos2, pos3);
+                MeshTriangle* triangle;
 
-                vertices.Append({ .pos = pos1, .normal = normal, .uv = uvs[indices[0].uv - 1] });
-                vertices.Append({ .pos = pos2, .normal = normal, .uv = uvs[indices[3].uv - 1] });
-                vertices.Append({ .pos = pos3, .normal = normal, .uv = uvs[indices[2].uv - 1] });
-                vertices.Append({ .pos = pos4, .normal = normal, .uv = uvs[indices[2].uv - 1] });
-                vertices.Append({ .pos = pos5, .normal = normal, .uv = uvs[indices[1].uv - 1] });
-                vertices.Append({ .pos = pos6, .normal = normal, .uv = uvs[indices[0].uv - 1] });
+                triangle = triangles.Append();
+                triangle->v[0].pos = positions[indices[0].pos - 1];
+                triangle->v[0].uv = uvs[indices[0].uv - 1];
+                triangle->v[1].pos = positions[indices[3].pos - 1];
+                triangle->v[1].uv = uvs[indices[3].uv - 1];
+                triangle->v[2].pos = positions[indices[2].pos - 1];
+                triangle->v[2].uv = uvs[indices[2].uv - 1];
+
+                const Vec3 normal = CalculateTriangleUnitNormal(triangle->v[0].pos, triangle->v[1].pos, triangle->v[2].pos);
+                triangle->v[0].normal = normal;
+                triangle->v[1].normal = normal;
+                triangle->v[2].normal = normal;
+
+                triangle = triangles.Append();
+                triangle->v[0].pos = positions[indices[2].pos - 1];
+                triangle->v[0].uv = uvs[indices[2].uv - 1];
+                triangle->v[1].pos = positions[indices[1].pos - 1];
+                triangle->v[1].uv = uvs[indices[1].uv - 1];
+                triangle->v[2].pos = positions[indices[0].pos - 1];
+                triangle->v[2].uv = uvs[indices[0].uv - 1];
+                triangle->v[0].normal = normal;
+                triangle->v[1].normal = normal;
+                triangle->v[2].normal = normal;
             }
             else {
                 return false;
@@ -124,10 +139,10 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
 
     DynamicArray<ObjModel, LinearAllocator> models(allocator);
     uint64 prevInd = 0;
-    for (uint64 i = 0; i < modelEndVertexInds.size; i++) {
+    for (uint64 i = 0; i < modelEndTriangleInds.size; i++) {
         ObjModel* model = models.Append();
-        model->vertices = vertices.ToArray().Slice(prevInd, modelEndVertexInds[i]);
-        prevInd = modelEndVertexInds[i];
+        model->triangles = triangles.ToArray().Slice(prevInd, modelEndTriangleInds[i]);
+        prevInd = modelEndTriangleInds[i];
     }
 
     result->models = models.ToArray();
