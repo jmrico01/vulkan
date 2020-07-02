@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <km_common/km_array.h>
 #include <km_common/km_defines.h>
@@ -13,17 +14,21 @@
 #include "app_main.h"
 #include "load_obj.h"
 
-#define PRETTY_BUT_SLOWER 0
+#define RESTRICT_LIGHTING 1
+// 0, 1, 2 - some rocks
+// 3 - box, left
+// 4 - head
+// 5 - box, right
+// 6 - some other rock
+// 7 - walls
+const int MODELS_TO_LIGHT[] = {
+    4
+};
 
-const int MODEL_IND_BOX = 3;
-const int MODEL_IND_HEAD = 4;
-const int MODEL_IND_WALL = 7;
-#define MODEL_TO_LIGHT MODEL_IND_WALL
-
-#define RESTRICT_OCCLUSION 1
+#define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE MODEL_IND_BOX
 
-#define RESTRICT_WALL 1
+#define RESTRICT_WALL 0
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
@@ -36,8 +41,9 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 32.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 128.0f;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 128;
+const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
 
 struct DebugTimer
 {
@@ -114,6 +120,56 @@ struct RaycastGeometry
 {
     Array<RaycastMesh> meshes;
 };
+
+struct WorkLightmapRasterizeRow
+{
+    int squareSize;
+    uint32* pixels;
+    int startPixelX, endPixelX, pixelY;
+    Vertex v0, v1, v2;
+    Array<Vec3> hemisphereSamples;
+    const Geometry* geometry;
+};
+
+#define WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);
+typedef WORK_QUEUE_CALLBACK_FUNCTION(WorkQueueCallbackFunction);
+
+struct WorkEntry
+{
+    WorkQueueCallbackFunction callback;
+    void* data;
+};
+
+struct WorkQueue
+{
+    static const uint64 MAX_ENTRIES = 
+};
+
+struct WorkerThread
+{
+    HANDLE handle;
+};
+
+DWORD WINAPI WorkerThreadProc(_In_ LPVOID lpParameter)
+{
+    WorkQueue* queue = (WorkQueue*)lpParameter;
+}
+
+bool SpawnWorkerThread(WorkQueue* queue, WorkerThread* thread)
+{
+    HANDLE handle = CreateThread(NULL, 0, WorkerThreadProc, queue, 0, NULL);
+    if (handle == NULL) {
+        LOG_ERROR("Failed to spawn worker thread\n");
+        return false;
+    }
+
+    thread->handle = handle;
+    return true;
+}
+
+void AddWork(WorkQueue* queue, WorkQueueCallbackFunction callback, void* data)
+{
+}
 
 internal AppState* GetAppState(AppMemory* memory)
 {
@@ -239,7 +295,7 @@ internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeom
     GenerateHemisphereSamples(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
 
     for (uint64 i = 0; i < model.triangles.size; i++) {
-#if !(PRETTY_BUT_SLOWER) && RESTRICT_WALL
+#if RESTRICT_WALL
         if (i / 2 != PLANE_TO_LIGHT) continue;
 #endif
 
@@ -307,6 +363,92 @@ internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeom
     }
 }
 
+bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
+{
+    WorkQueue queue;
+
+    SYSTEM_INFO systemInfo;
+    GetSystemInfo(&systemInfo);
+    LOG_INFO("# processors: %d\n", systemInfo.dwNumberOfProcessors);
+    DynamicArray<WorkerThread, LinearAllocator> threads(systemInfo.dwNumberOfProcessors, allocator);
+    for (int i = 0; i < systemInfo.dwNumberOfProcessors; i++) {
+        WorkerThread* thread = threads.Append();
+        if (!SpawnWorkerThread(&queue, thread)) {
+            return false;
+        }
+    }
+    // TODO defer call some way of clearing queue and stopping all worker threads?
+    // Could also just keep them alive and sleeping...
+
+    RaycastGeometry geometry;
+    DynamicArray<RaycastMesh, LinearAllocator> meshes(allocator);
+    for (uint64 i = 0; i < obj.models.size; i++) {
+        DynamicArray<RaycastTriangle, LinearAllocator> triangles(allocator);
+        for (uint64 j = 0; j < obj.models[i].triangles.size; j++) {
+            const MeshTriangle& triangle = obj.models[i].triangles[j];
+            RaycastTriangle* newTriangle = triangles.Append();
+            newTriangle->v[0] = triangle.v[0].pos;
+            newTriangle->v[1] = triangle.v[1].pos;
+            newTriangle->v[2] = triangle.v[2].pos;
+            newTriangle->normal = triangle.v[0].normal; // NOTE flat shading, all normals are the same
+        }
+
+        RaycastMesh* mesh = meshes.Append();
+        mesh->triangles = triangles.ToArray();
+        mesh->min = Vec3::one * 1e8;
+        mesh->max = -Vec3::one * 1e8;
+        for (uint64 j = 0; j < triangles.size; j++) {
+            for (int k = 0; k < 3; k++) {
+                const Vec3 v = triangles[j].v[k];
+                for (int e = 0; e < 3; e++) {
+                    if (v.e[e] < mesh->min.e[e]) {
+                        mesh->min.e[e] = v.e[e];
+                    }
+                    if (v.e[e] > mesh->max.e[e]) {
+                        mesh->max.e[e] = v.e[e];
+                    }
+                }
+            }
+        }
+    }
+    geometry.meshes = meshes.ToArray();
+
+    DebugTimer lightmapTimer = StartDebugTimer();
+
+#if RESTRICT_LIGHTING
+    for (uint64 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[m++])
+#else
+    for (uint64 i = 0; i < obj.models.size; i++)
+#endif
+    {
+        auto state = allocator->SaveState();
+        defer(allocator->LoadState(state));
+
+        float32 surfaceArea = 0.0f;
+        for (int j = 0; j < obj.models[i].triangles.size; j++) {
+            const MeshTriangle& triangle = obj.models[i].triangles[j];
+            surfaceArea += TriangleArea(triangle.v[0].pos, triangle.v[1].pos, triangle.v[2].pos);
+        }
+
+        const int size = (int)(sqrt(surfaceArea) * LIGHTMAP_RESOLUTION_PER_WORLD_UNIT);
+        const int squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
+        const uint64 bytes = squareSize * squareSize * sizeof(uint32);
+        uint32* pixels = (uint32*)allocator->Allocate(bytes);
+        if (pixels == nullptr) {
+            return false;
+        }
+
+        CalculateLightmapForModel(obj.models[i], geometry, squareSize, pixels);
+
+        const char* filePath = ToCString(AllocPrintf(allocator, "data/lightmaps/%llu.png", i), allocator);
+        stbi_write_png(filePath, squareSize, squareSize, 4, pixels, 0);
+    }
+
+    StopAndPrintDebugTimer(&lightmapTimer);
+
+    return true;
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(audio);
@@ -323,6 +465,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
         memory->initialized = true;
+    }
+
+    if (KeyDown(input, KM_KEY_L)) {
+        LinearAllocator allocator(memory->transient);
+
+        LoadObjResult obj;
+        if (LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
+            if (GenerateLightmaps(obj, &allocator)) {
+                AppUnloadVulkanState(vulkanState, memory);
+                if (!AppLoadVulkanState(vulkanState, memory)) {
+                    LOG_ERROR("Failed to reload Vulkan state after lightmap generation\n");
+                }
+            }
+            else {
+                LOG_ERROR("Failed to generate lightmaps\n");
+            }
+        }
+        else {
+            LOG_ERROR("Failed to load scene .obj when generating lightmaps\n");
+        }
     }
 
     appState->totalElapsed += deltaTime;
@@ -668,142 +830,6 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         return false;
     }
 
-    // Create textures
-    {
-        RaycastGeometry geometry;
-        DynamicArray<RaycastMesh, LinearAllocator> meshes(&allocator);
-        for (uint64 i = 0; i < obj.models.size; i++) {
-            DynamicArray<RaycastTriangle, LinearAllocator> triangles(&allocator);
-            for (uint64 j = 0; j < obj.models[i].triangles.size; j++) {
-                const MeshTriangle& triangle = obj.models[i].triangles[j];
-                RaycastTriangle* newTriangle = triangles.Append();
-                newTriangle->v[0] = triangle.v[0].pos;
-                newTriangle->v[1] = triangle.v[1].pos;
-                newTriangle->v[2] = triangle.v[2].pos;
-                newTriangle->normal = triangle.v[0].normal; // NOTE flat shading, all normals are the same
-            }
-
-            RaycastMesh* mesh = meshes.Append();
-            mesh->triangles = triangles.ToArray();
-            mesh->min = Vec3::one * 1e8;
-            mesh->max = -Vec3::one * 1e8;
-            for (uint64 j = 0; j < triangles.size; j++) {
-                for (int k = 0; k < 3; k++) {
-                    const Vec3 v = triangles[j].v[k];
-                    for (int e = 0; e < 3; e++) {
-                        if (v.e[e] < mesh->min.e[e]) {
-                            mesh->min.e[e] = v.e[e];
-                        }
-                        if (v.e[e] > mesh->max.e[e]) {
-                            mesh->max.e[e] = v.e[e];
-                        }
-                    }
-                }
-            }
-        }
-        geometry.meshes = meshes.ToArray();
-
-        DebugTimer lightmapTimer = StartDebugTimer();
-        for (uint64 i = 0; i < obj.models.size; i++) {
-            VulkanImage* image = app->textures.Append();
-
-            float32 surfaceArea = 0.0f;
-            for (int j = 0; j < obj.models[i].triangles.size; j++) {
-                const MeshTriangle& triangle = obj.models[i].triangles[j];
-                surfaceArea += TriangleArea(triangle.v[0].pos, triangle.v[1].pos, triangle.v[2].pos);
-            }
-
-            const int size = (int)(sqrt(surfaceArea) * LIGHTMAP_RESOLUTION_PER_WORLD_UNIT);
-            const int squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
-            if (!CreateImage(window.device, window.physicalDevice, squareSize, squareSize,
-                             VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                             &image->image, &image->memory)) {
-                LOG_ERROR("CreateImage failed\n");
-                return false;
-            }
-
-            const VkDeviceSize imageSize = squareSize * squareSize * 4;
-            VkBuffer stagingBuffer;
-            VkDeviceMemory stagingBufferMemory;
-            if (!CreateBuffer(imageSize,
-                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                              window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
-                LOG_ERROR("CreateBuffer failed for staging buffer\n");
-                return false;
-            }
-            defer({
-                      vkDestroyBuffer(window.device, stagingBuffer, nullptr);
-                      vkFreeMemory(window.device, stagingBufferMemory, nullptr);
-                  });
-
-            void* data;
-            vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
-
-#if 1
-            if (i != MODEL_TO_LIGHT) {
-                MemSet(data, 0x10, squareSize * squareSize * sizeof(uint32));
-            }
-            else {
-                CalculateLightmapForModel(obj.models[i], geometry, squareSize, (uint32*)data);
-            }
-#else
-            CalculateLightmapForModel(obj.models[i], geometry, squareSize, (uint32*)data);
-#endif
-
-            vkUnmapMemory(window.device, stagingBufferMemory);
-
-            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
-                                  VK_IMAGE_LAYOUT_UNDEFINED,
-                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
-                              stagingBuffer, image->image, squareSize, squareSize);
-            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
-                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-            if (!CreateImageView(window.device, image->image, VK_FORMAT_R8G8B8A8_SRGB,
-                                 VK_IMAGE_ASPECT_COLOR_BIT, &image->view)) {
-                LOG_ERROR("CreateImageView failed\n");
-                return false;
-            }
-        }
-        StopAndPrintDebugTimer(&lightmapTimer);
-    }
-
-    // Create texture sampler
-    {
-        VkSamplerCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-#if PRETTY_BUT_SLOWER
-        createInfo.magFilter = VK_FILTER_LINEAR;
-        createInfo.minFilter = VK_FILTER_LINEAR;
-#else
-        createInfo.magFilter = VK_FILTER_NEAREST;
-        createInfo.minFilter = VK_FILTER_NEAREST;
-#endif
-        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.anisotropyEnable = VK_FALSE;
-        createInfo.maxAnisotropy = 1.0f;
-        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        createInfo.unnormalizedCoordinates = VK_FALSE;
-        createInfo.compareEnable = VK_FALSE;
-        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        createInfo.mipLodBias = 0.0f;
-        createInfo.minLod = 0.0f;
-        createInfo.maxLod = 0.0f;
-
-        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->textureSampler) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateSampler failed\n");
-            return false;
-        }
-    }
-
     // Create vertex buffer
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
     // but doesn't really need to be recreated with the swapchain
@@ -883,9 +909,94 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         }
     }
 
+    // Create texture sampler
+    {
+        VkSamplerCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        createInfo.magFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.minFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.anisotropyEnable = VK_FALSE;
+        createInfo.maxAnisotropy = 1.0f;
+        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        createInfo.unnormalizedCoordinates = VK_FALSE;
+        createInfo.compareEnable = VK_FALSE;
+        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        createInfo.mipLodBias = 0.0f;
+        createInfo.minLod = 0.0f;
+        createInfo.maxLod = 0.0f;
+
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->textureSampler) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSampler failed\n");
+            return false;
+        }
+    }
+
+    // Create lightmaps
+    {
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            const char* filePath = ToCString(AllocPrintf(&allocator, "data/lightmaps/%llu.png", i), &allocator);
+            int width, height, channels;
+            unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
+            if (imageData == NULL) {
+                LOG_ERROR("Failed to load lightmap: %s\n", filePath);
+                return false;
+            }
+            defer(stbi_image_free(imageData));
+
+            VulkanImage* image = app->lightmaps.Append();
+            if (!CreateImage(window.device, window.physicalDevice, width, height,
+                             VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &image->image, &image->memory)) {
+                LOG_ERROR("CreateImage failed\n");
+                return false;
+            }
+
+            const VkDeviceSize imageSize = width * height * 4;
+            VkBuffer stagingBuffer;
+            VkDeviceMemory stagingBufferMemory;
+            if (!CreateBuffer(imageSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+                LOG_ERROR("CreateBuffer failed for staging buffer\n");
+                return false;
+            }
+            defer({
+                      vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+                      vkFreeMemory(window.device, stagingBufferMemory, nullptr);
+                  });
+
+            void* data;
+            vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
+            MemCopy(data, imageData, imageSize);
+            vkUnmapMemory(window.device, stagingBufferMemory);
+
+            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
+                                  VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            CopyBufferToImage(window.device, app->commandPool, window.graphicsQueue,
+                              stagingBuffer, image->image, width, height);
+            TransitionImageLayout(window.device, app->commandPool, window.graphicsQueue, image->image,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+            if (!CreateImageView(window.device, image->image, VK_FORMAT_R8G8B8A8_SRGB,
+                                 VK_IMAGE_ASPECT_COLOR_BIT, &image->view)) {
+                LOG_ERROR("CreateImageView failed\n");
+                return false;
+            }
+        }
+    }
+
     // Create descriptor set
     {
-        FixedArray<VkDescriptorSetLayout, VulkanAppState::MAX_TEXTURES> layouts;
+        FixedArray<VkDescriptorSetLayout, VulkanAppState::MAX_LIGHTMAPS> layouts;
         layouts.Clear();
         for (uint64 i = 0; i < obj.models.size; i++) {
             layouts.Append(app->descriptorSetLayout);
@@ -911,7 +1022,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
             VkDescriptorImageInfo imageInfo = {};
             imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = app->textures[i].view;
+            imageInfo.imageView = app->lightmaps[i].view;
             imageInfo.sampler = app->textureSampler;
 
             VkWriteDescriptorSet descriptorWrites[2] = {};
@@ -1024,12 +1135,12 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 
     vkDestroySampler(device, app->textureSampler, nullptr);
 
-    for (uint64 i = 0; i < app->textures.size; i++) {
-        vkDestroyImageView(device, app->textures[i].view, nullptr);
-        vkDestroyImage(device, app->textures[i].image, nullptr);
-        vkFreeMemory(device, app->textures[i].memory, nullptr);
+    for (uint64 i = 0; i < app->lightmaps.size; i++) {
+        vkDestroyImageView(device, app->lightmaps[i].view, nullptr);
+        vkDestroyImage(device, app->lightmaps[i].image, nullptr);
+        vkFreeMemory(device, app->lightmaps[i].memory, nullptr);
     }
-    app->textures.Clear();
+    app->lightmaps.Clear();
 
     app->commandBuffers.Clear();
     vkDestroyCommandPool(device, app->commandPool, nullptr);
@@ -1057,3 +1168,9 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #undef STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+#undef STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_SPRINTF_IMPLEMENTATION
+#include <stb_sprintf.h>
+#undef STB_SPRINTF_IMPLEMENTATION
