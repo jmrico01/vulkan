@@ -1,5 +1,6 @@
 #include "main.h"
 
+#include <intrin.h>
 #include <stdio.h>
 
 #include <stb_image.h>
@@ -12,14 +13,75 @@
 #include "app_main.h"
 #include "load_obj.h"
 
+#define PRETTY_BUT_SLOWER 0
+
+const int MODEL_IND_BOX = 3;
+const int MODEL_IND_HEAD = 4;
+const int MODEL_IND_WALL = 7;
+#define MODEL_TO_LIGHT MODEL_IND_WALL
+
+#define RESTRICT_OCCLUSION 1
+#define MODEL_TO_OCCLUDE MODEL_IND_BOX
+
+#define RESTRICT_WALL 1
+const uint64 PLANE_LEFT  = 0;
+const uint64 PLANE_BACK  = 1;
+const uint64 PLANE_RIGHT = 2;
+const uint64 PLANE_FLOOR = 3;
+#define PLANE_TO_LIGHT PLANE_FLOOR
+
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
 
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 128.0f;
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 32.0f;
 const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+
+struct DebugTimer
+{
+    static bool initialized;
+    static uint64 win32Freq;
+
+    uint64 cycles;
+    uint64 win32Time;
+};
+
+bool DebugTimer::initialized = false;
+uint64 DebugTimer::win32Freq;
+
+DebugTimer StartDebugTimer()
+{
+    if (!DebugTimer::initialized) {
+        DebugTimer::initialized = true;
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        DebugTimer::win32Freq = freq.QuadPart;
+    }
+
+    DebugTimer timer;
+    LARGE_INTEGER win32Time;
+    QueryPerformanceCounter(&win32Time);
+    timer.win32Time = win32Time.QuadPart;
+    timer.cycles = __rdtsc();
+    return timer;
+}
+
+void StopDebugTimer(DebugTimer* timer)
+{
+    LARGE_INTEGER win32End;
+    QueryPerformanceCounter(&win32End);
+    timer->cycles = __rdtsc() - timer->cycles;
+    timer->win32Time = win32End.QuadPart - timer->win32Time;
+}
+
+void StopAndPrintDebugTimer(DebugTimer* timer)
+{
+    StopDebugTimer(timer);
+    const float32 win32Time = (float32)timer->win32Time / DebugTimer::win32Freq * 1000.0f;
+    LOG_INFO("Timer: %.03fms | %llu MC | %llu C\n", win32Time, timer->cycles / 1000000, timer->cycles);
+}
 
 struct UniformBufferObject
 {
@@ -34,6 +96,23 @@ struct LightRect
     Vec3 width;
     Vec3 height;
     Vec3 color;
+};
+
+struct RaycastTriangle
+{
+    Vec3 v[3];
+    Vec3 normal;
+};
+
+struct RaycastMesh
+{
+    Vec3 min, max;
+    Array<RaycastTriangle> triangles;
+};
+
+struct RaycastGeometry
+{
+    Array<RaycastMesh> meshes;
 };
 
 internal AppState* GetAppState(AppMemory* memory)
@@ -56,19 +135,19 @@ void GenerateHemisphereSamples(int n, Vec3* samples)
     }
 }
 
-internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 normal, Array<ObjModel> models)
+internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 normal, RaycastGeometry geometry)
 {
-    UNREFERENCED_PARAMETER(models);
-
+    // For reference: left wall is at  Y =  1.498721
+    //                right wall is at Y = -1.544835
     const LightRect LIGHT_RECTS[] = {
         {
-            .origin = { 4.0f, 5.4f, 2.24f },
+            .origin = { 4.0f, 1.498721f - 0.005f, 2.24f },
             .width = { -2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 1.0f, 0.0f, 0.0f }
         },
         {
-            .origin = { 2.0f, 2.42f, 2.24f },
+            .origin = { 2.0f, -1.544835f + 0.005f, 2.24f },
             .width = { 2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 0.0f, 0.0f, 1.0f }
@@ -77,40 +156,70 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
 
     // NOTE this will do undefined things with "up" direction
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
-    const float32 originOffset = 0.0f;
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
     Vec3 outputColor = ambient;
-    for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
-        const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
-        const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
-        const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
-        const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
-        const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
+    for (int i = 0; i < numSamples; i++) {
+        const Vec3 sampleNormal = xToNormalRot * samples[i];
+        const Vec3 sampleNormalInv = {
+            1.0f / sampleNormal.x,
+            1.0f / sampleNormal.y,
+            1.0f / sampleNormal.z
+        };
 
-        float32 lightIntensity = 0.0f;
-        for (int i = 0; i < numSamples; i++) {
-            const Vec3 sampleNormal = xToNormalRot * samples[i];
-            const Vec3 origin = pos + sampleNormal * originOffset;
+        const float32 offset = 0.001f;
+        const Vec3 originOffset = pos + sampleNormal * offset;
 
-            float32 intersectA;
-            if (!RayPlaneIntersection(origin, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &intersectA)) {
+        float32 closestIntersectDist = 1e8;
+        const RaycastTriangle* closestTriangle = nullptr;
+        for (int j = 0; j < geometry.meshes.size; j++) {
+#if RESTRICT_OCCLUSION
+            if (j != MODEL_TO_OCCLUDE) continue;
+#endif
+            const RaycastMesh& mesh = geometry.meshes[j];
+            if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max)) {
                 continue;
             }
-            if (intersectA < 0.0f) {
+
+            for (int k = 0; k < geometry.meshes[j].triangles.size; k++) {
+                const RaycastTriangle& triangle = geometry.meshes[j].triangles[k];
+                float32 dot = Dot(sampleNormal, triangle.normal);
+                if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
+
+                float32 t;
+                if (RayTriangleIntersection(originOffset, sampleNormal, triangle.v[0], triangle.v[1], triangle.v[2], &t)) {
+                    if (t > 0.0f && t < closestIntersectDist) {
+                        closestIntersectDist = t;
+                        closestTriangle = &triangle;
+                    }
+                }
+            }
+        }
+
+        for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
+            const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
+            const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
+            const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
+            const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
+            const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
+
+            float32 t;
+            if (!RayPlaneIntersection(pos, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &t)) {
+                continue;
+            }
+            if (t < 0.0f || t > closestIntersectDist) {
                 continue;
             }
 
-            const Vec3 intersect = origin + intersectA * sampleNormal;
+            const Vec3 intersect = pos + t * sampleNormal;
             const Vec3 rectOriginToIntersect = intersect - LIGHT_RECTS[l].origin;
             const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
             const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
             if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
-                lightIntensity += 1.0f / numSamples;
+                const float32 lightIntensity = 1.0f / numSamples;
+                outputColor += lightIntensity * LIGHT_RECTS[l].color;
             }
         }
-
-        outputColor += lightIntensity * LIGHT_RECTS[l].color;
     }
 
     outputColor.r = ClampFloat32(outputColor.r, 0.0f, 1.0f);
@@ -119,21 +228,21 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
     return outputColor;
 }
 
-internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, int squareSize, uint32* pixels)
+internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeometry& geometry,
+                                        int squareSize, uint32* pixels)
 {
-    const ObjModel& model = models[modelInd];
-
-    if (modelInd != 7) {
-        // MemSet(pixels, 0x10, squareSize * squareSize * sizeof(uint32));
-        // return;
-    }
-    MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
     const int LIGHTMAP_PIXEL_MARGIN = 1;
+
+    MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
     Vec3 hemisphereSamples[LIGHTMAP_NUM_HEMISPHERE_SAMPLES];
     GenerateHemisphereSamples(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
 
     for (uint64 i = 0; i < model.triangles.size; i++) {
+#if !(PRETTY_BUT_SLOWER) && RESTRICT_WALL
+        if (i / 2 != PLANE_TO_LIGHT) continue;
+#endif
+
         const Vertex v1 = model.triangles[i].v[0];
         const Vertex v2 = model.triangles[i].v[1];
         const Vertex v3 = model.triangles[i].v[2];
@@ -185,13 +294,15 @@ internal void CalculateLightmapForModel(Array<ObjModel> models, int modelInd, in
                 const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
 
                 const Vec3 raycastColor = RaycastColor(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples,
-                                                       pos, normal, models);
+                                                       pos, normal, geometry);
                 uint8 r = (uint8)(raycastColor.r * 255.0f);
                 uint8 g = (uint8)(raycastColor.g * 255.0f);
                 uint8 b = (uint8)(raycastColor.b * 255.0f);
                 uint8 a = 0xff;
                 pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
             }
+            LOG_INFO("triangle %llu/%llu: row rasterized [%d | %d | %d), %d pixels\n",
+                     i + 1, model.triangles.size, minPixelY, y, maxPixelY, maxPixelX - minPixelX);
         }
     }
 }
@@ -552,13 +663,47 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
     }
 
     LoadObjResult obj;
-    if (!LoadObj(ToString("data/models/reference-scene.obj"), &obj, &allocator)) {
+    if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
         LOG_ERROR("Failed to load reference scene .obj\n");
         return false;
     }
 
     // Create textures
     {
+        RaycastGeometry geometry;
+        DynamicArray<RaycastMesh, LinearAllocator> meshes(&allocator);
+        for (uint64 i = 0; i < obj.models.size; i++) {
+            DynamicArray<RaycastTriangle, LinearAllocator> triangles(&allocator);
+            for (uint64 j = 0; j < obj.models[i].triangles.size; j++) {
+                const MeshTriangle& triangle = obj.models[i].triangles[j];
+                RaycastTriangle* newTriangle = triangles.Append();
+                newTriangle->v[0] = triangle.v[0].pos;
+                newTriangle->v[1] = triangle.v[1].pos;
+                newTriangle->v[2] = triangle.v[2].pos;
+                newTriangle->normal = triangle.v[0].normal; // NOTE flat shading, all normals are the same
+            }
+
+            RaycastMesh* mesh = meshes.Append();
+            mesh->triangles = triangles.ToArray();
+            mesh->min = Vec3::one * 1e8;
+            mesh->max = -Vec3::one * 1e8;
+            for (uint64 j = 0; j < triangles.size; j++) {
+                for (int k = 0; k < 3; k++) {
+                    const Vec3 v = triangles[j].v[k];
+                    for (int e = 0; e < 3; e++) {
+                        if (v.e[e] < mesh->min.e[e]) {
+                            mesh->min.e[e] = v.e[e];
+                        }
+                        if (v.e[e] > mesh->max.e[e]) {
+                            mesh->max.e[e] = v.e[e];
+                        }
+                    }
+                }
+            }
+        }
+        geometry.meshes = meshes.ToArray();
+
+        DebugTimer lightmapTimer = StartDebugTimer();
         for (uint64 i = 0; i < obj.models.size; i++) {
             VulkanImage* image = app->textures.Append();
 
@@ -597,7 +742,16 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             void* data;
             vkMapMemory(window.device, stagingBufferMemory, 0, imageSize, 0, &data);
 
-            CalculateLightmapForModel(obj.models, (int)i, squareSize, (uint32*)data);
+#if 1
+            if (i != MODEL_TO_LIGHT) {
+                MemSet(data, 0x10, squareSize * squareSize * sizeof(uint32));
+            }
+            else {
+                CalculateLightmapForModel(obj.models[i], geometry, squareSize, (uint32*)data);
+            }
+#else
+            CalculateLightmapForModel(obj.models[i], geometry, squareSize, (uint32*)data);
+#endif
 
             vkUnmapMemory(window.device, stagingBufferMemory);
 
@@ -616,14 +770,20 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
                 return false;
             }
         }
+        StopAndPrintDebugTimer(&lightmapTimer);
     }
 
     // Create texture sampler
     {
         VkSamplerCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+#if PRETTY_BUT_SLOWER
         createInfo.magFilter = VK_FILTER_LINEAR;
         createInfo.minFilter = VK_FILTER_LINEAR;
+#else
+        createInfo.magFilter = VK_FILTER_NEAREST;
+        createInfo.minFilter = VK_FILTER_NEAREST;
+#endif
         createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
