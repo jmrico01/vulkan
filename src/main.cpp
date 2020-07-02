@@ -121,6 +121,7 @@ struct RaycastGeometry
     Array<RaycastMesh> meshes;
 };
 
+#if 0
 struct WorkLightmapRasterizeRow
 {
     int squareSize;
@@ -128,7 +129,7 @@ struct WorkLightmapRasterizeRow
     int startPixelX, endPixelX, pixelY;
     Vertex v0, v1, v2;
     Array<Vec3> hemisphereSamples;
-    const Geometry* geometry;
+    const RaycastGeometry* geometry;
 };
 
 #define WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);
@@ -142,7 +143,6 @@ struct WorkEntry
 
 struct WorkQueue
 {
-    static const uint64 MAX_ENTRIES = 
 };
 
 struct WorkerThread
@@ -170,6 +170,7 @@ bool SpawnWorkerThread(WorkQueue* queue, WorkerThread* thread)
 void AddWork(WorkQueue* queue, WorkQueueCallbackFunction callback, void* data)
 {
 }
+#endif
 
 internal AppState* GetAppState(AppMemory* memory)
 {
@@ -365,6 +366,7 @@ internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeom
 
 bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
 {
+#if 0
     WorkQueue queue;
 
     SYSTEM_INFO systemInfo;
@@ -379,6 +381,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
     }
     // TODO defer call some way of clearing queue and stopping all worker threads?
     // Could also just keep them alive and sleeping...
+#endif
 
     RaycastGeometry geometry;
     DynamicArray<RaycastMesh, LinearAllocator> meshes(allocator);
