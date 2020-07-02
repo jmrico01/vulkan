@@ -27,8 +27,8 @@ struct VulkanAppState
     VkCommandPool commandPool;
     FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
 
-    static const uint64 MAX_TEXTURES = 64;
-    FixedArray<VulkanImage, MAX_TEXTURES> textures;
+    static const uint64 MAX_LIGHTMAPS = 64;
+    FixedArray<VulkanImage, MAX_LIGHTMAPS> lightmaps;
     VkSampler textureSampler;
 
     VkBuffer vertexBuffer;
@@ -37,7 +37,7 @@ struct VulkanAppState
     VkDeviceMemory uniformBufferMemory;
 
     VkDescriptorPool descriptorPool;
-    FixedArray<VkDescriptorSet, MAX_TEXTURES> descriptorSets;
+    FixedArray<VkDescriptorSet, MAX_LIGHTMAPS> descriptorSets;
 };
 
 struct AppState

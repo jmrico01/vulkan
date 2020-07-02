@@ -51,7 +51,8 @@ LIBS_EXTERNAL = [
             "release": "freetype281MT.lib"
         }
     ),
-    LibExternal("stbimage",   path="stb_image-2.23"),
+    LibExternal("stbimage", path="stb_image-2.23"),
+    LibExternal("stbimagewrite", path="stb_image_write-1.14"),
     LibExternal("stbsprintf", path="stb_sprintf-1.06")
 ]
 
