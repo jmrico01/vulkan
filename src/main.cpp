@@ -24,10 +24,10 @@
 
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    0, 1, 2
+    2
 };
 
-#define RESTRICT_OCCLUSION 1
+#define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
 #define RESTRICT_WALL 0
@@ -43,8 +43,8 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 64.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 256.0f;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 128;
 const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
 
 struct DebugTimer
@@ -394,7 +394,7 @@ internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeom
                 work->pos[2] = v2.pos;
                 work->normal = normal;
                 if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
-                    LOG_INFO("flushing queue. triangle %llu/%llu, row [%d, %d %d)\n",
+                    LOG_INFO("flushing queue. triangle %llu/%llu, row [%d, %d, %d)\n",
                              i + 1, model.triangles.size, minPixelY, y, maxPixelY);
                     CompleteAllWork(queue);
                     DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
