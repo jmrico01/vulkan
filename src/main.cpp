@@ -22,15 +22,15 @@
 // 6 - some other rock
 // 7 - walls
 
-#define RESTRICT_LIGHTING 0
+#define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    2
+    7
 };
 
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 0
+#define RESTRICT_WALL 1
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
@@ -43,8 +43,8 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 256.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 256;
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 64.0f;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
 const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
 
 struct DebugTimer
