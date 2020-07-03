@@ -14,13 +14,36 @@ struct AppMemory
     Array<uint8> transient;
 };
 
+#define APP_WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);
+typedef APP_WORK_QUEUE_CALLBACK_FUNCTION(AppWorkQueueCallbackFunction);
+
+struct AppWorkEntry
+{
+    AppWorkQueueCallbackFunction* callback;
+    void* data;
+};
+
+struct AppWorkQueue
+{
+    volatile uint32 entriesTotal;
+    volatile uint32 entriesComplete;
+
+    volatile uint32 read;
+    volatile uint32 write;
+    AppWorkEntry entries[4 * 1024];
+    HANDLE win32SemaphoreHandle;
+};
+
+void CompleteAllWork(AppWorkQueue* queue);
+bool TryAddWork(AppWorkQueue* queue, AppWorkQueueCallbackFunction* callback, void* data);
+
 struct AppAudio
 {
 };
 
 #define APP_UPDATE_AND_RENDER_FUNCTION(name) bool name(const VulkanState& vulkanState, uint32_t swapchainImageIndex, \
 const AppInput& input, float32 deltaTime, \
-AppMemory* memory, AppAudio* audio)
+AppMemory* memory, AppAudio* audio, AppWorkQueue* queue)
 typedef APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRenderFunction);
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender);

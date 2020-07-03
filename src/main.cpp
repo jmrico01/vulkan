@@ -14,21 +14,23 @@
 #include "app_main.h"
 #include "load_obj.h"
 
-#define RESTRICT_LIGHTING 1
+// MODEL INDICES:
 // 0, 1, 2 - some rocks
 // 3 - box, left
 // 4 - head
 // 5 - box, right
 // 6 - some other rock
 // 7 - walls
+
+#define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    7
+    5
 };
 
-#define RESTRICT_OCCLUSION 1
+#define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 1
+#define RESTRICT_WALL 0
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
@@ -102,6 +104,7 @@ struct LightRect
     Vec3 width;
     Vec3 height;
     Vec3 color;
+    float32 intensity;
 };
 
 struct RaycastTriangle
@@ -121,66 +124,15 @@ struct RaycastGeometry
     Array<RaycastMesh> meshes;
 };
 
-#if 0
-struct WorkLightmapRasterizeRow
-{
-    int squareSize;
-    uint32* pixels;
-    int startPixelX, endPixelX, pixelY;
-    Vertex v0, v1, v2;
-    Array<Vec3> hemisphereSamples;
-    const RaycastGeometry* geometry;
-};
-
-#define WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);
-typedef WORK_QUEUE_CALLBACK_FUNCTION(WorkQueueCallbackFunction);
-
-struct WorkEntry
-{
-    WorkQueueCallbackFunction callback;
-    void* data;
-};
-
-struct WorkQueue
-{
-};
-
-struct WorkerThread
-{
-    HANDLE handle;
-};
-
-DWORD WINAPI WorkerThreadProc(_In_ LPVOID lpParameter)
-{
-    WorkQueue* queue = (WorkQueue*)lpParameter;
-}
-
-bool SpawnWorkerThread(WorkQueue* queue, WorkerThread* thread)
-{
-    HANDLE handle = CreateThread(NULL, 0, WorkerThreadProc, queue, 0, NULL);
-    if (handle == NULL) {
-        LOG_ERROR("Failed to spawn worker thread\n");
-        return false;
-    }
-
-    thread->handle = handle;
-    return true;
-}
-
-void AddWork(WorkQueue* queue, WorkQueueCallbackFunction callback, void* data)
-{
-}
-#endif
-
 internal AppState* GetAppState(AppMemory* memory)
 {
     DEBUG_ASSERT(sizeof(AppState) < memory->permanent.size);
     return (AppState*)memory->permanent.data;
 }
 
-void GenerateHemisphereSamples(int n, Vec3* samples)
+void GenerateHemisphereSamples(Array<Vec3> samples)
 {
-    for (int i = 0; i < n; i++) {
+    for (uint64 i = 0; i < samples.size; i++) {
         Vec3 dir;
         do {
             dir.x = RandFloat32();
@@ -192,7 +144,7 @@ void GenerateHemisphereSamples(int n, Vec3* samples)
     }
 }
 
-internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 normal, RaycastGeometry geometry)
+internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const RaycastGeometry& geometry)
 {
     // For reference: left wall is at  Y =  1.498721
     //                right wall is at Y = -1.544835
@@ -201,13 +153,15 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
             .origin = { 4.0f, 1.498721f - 0.005f, 2.24f },
             .width = { -2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
-            .color = Vec3 { 1.0f, 0.0f, 0.0f }
+            .color = Vec3 { 1.0f, 0.0f, 0.0f },
+            .intensity = 2.0f
         },
         {
             .origin = { 2.0f, -1.544835f + 0.005f, 2.24f },
             .width = { 2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
-            .color = Vec3 { 0.0f, 0.0f, 1.0f }
+            .color = Vec3 { 0.0f, 0.0f, 1.0f },
+            .intensity = 2.0f
         },
     };
 
@@ -215,8 +169,10 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
+    // TODO hit this with some spicy AVX, 8 samples at a time
+    // We will want to bundle rays with similar directions
     Vec3 outputColor = ambient;
-    for (int i = 0; i < numSamples; i++) {
+    for (uint64 i = 0; i < samples.size; i++) {
         const Vec3 sampleNormal = xToNormalRot * samples[i];
         const Vec3 sampleNormalInv = {
             1.0f / sampleNormal.x,
@@ -273,7 +229,7 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
             const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
             const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
             if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
-                const float32 lightIntensity = 1.0f / numSamples;
+                const float32 lightIntensity = LIGHT_RECTS[l].intensity / samples.size;
                 outputColor += lightIntensity * LIGHT_RECTS[l].color;
             }
         }
@@ -285,104 +241,159 @@ internal Vec3 RaycastColor(int numSamples, const Vec3* samples, Vec3 pos, Vec3 n
     return outputColor;
 }
 
-internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeometry& geometry,
-                                        int squareSize, uint32* pixels)
+struct WorkLightmapRasterizeRow
+{
+    int squareSize;
+    uint32* pixels;
+    int minPixelX, maxPixelX, pixelY;
+    Vertex v0, v1, v2;
+    Array<Vec3> hemisphereSamples;
+    const RaycastGeometry* geometry;
+};
+
+int triangleInd_ = 0;
+int triangles_ = 0;
+
+void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixelY, Vertex v0, Vertex v1, Vertex v2,
+                          Array<Vec3> hemisphereSamples, const RaycastGeometry& geometry, uint32* pixels)
+{
+    LOG_INFO("triangle %d/%d, rasterizing row %d (%d pixels)\n", triangleInd_, triangles_, pixelY, maxPixelX - minPixelX);
+
+    const float32 uvY = (float32)pixelY / squareSize;
+    for (int x = minPixelX; x < maxPixelX; x++) {
+        const float32 uvX = (float32)x / squareSize;
+        const Vec3 bC = BarycentricCoordinates(Vec2 { uvX, uvY }, v0.uv, v1.uv, v2.uv);
+        const Vec3 pos = v0.pos * bC.x + v1.pos * bC.y + v2.pos * bC.z;
+        const Vec3 normal = v0.normal; // NOTE: we're flat-shading, so normals are all the same
+
+        const Vec3 raycastColor = RaycastColor(hemisphereSamples, pos, normal, geometry);
+        uint8 r = (uint8)(raycastColor.r * 255.0f);
+        uint8 g = (uint8)(raycastColor.g * 255.0f);
+        uint8 b = (uint8)(raycastColor.b * 255.0f);
+        uint8 a = 0xff;
+        pixels[pixelY * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
+    }
+}
+
+void ThreadLightmapRasterizeRow(void* data)
+{
+    WorkLightmapRasterizeRow* workData = (WorkLightmapRasterizeRow*)data;
+    LightmapRasterizeRow(workData->squareSize, workData->minPixelX, workData->maxPixelX, workData->pixelY,
+                         workData->v0, workData->v1, workData->v2, workData->hemisphereSamples, *workData->geometry,
+                         workData->pixels);
+}
+
+internal void CalculateLightmapForModel(const ObjModel& model, const RaycastGeometry& geometry, AppWorkQueue* queue,
+                                        LinearAllocator* allocator, int squareSize, uint32* pixels)
 {
     const int LIGHTMAP_PIXEL_MARGIN = 1;
+    const int MIN_THREAD_PIXEL_ROW_LENGTH = 3;
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
-    Vec3 hemisphereSamples[LIGHTMAP_NUM_HEMISPHERE_SAMPLES];
-    GenerateHemisphereSamples(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples);
+    StaticArray<Vec3, LIGHTMAP_NUM_HEMISPHERE_SAMPLES> hemisphereSamples;
+    Array<Vec3> hemisphereSamplesArray = hemisphereSamples.ToArray();
+    GenerateHemisphereSamples(hemisphereSamplesArray);
+
+    WorkLightmapRasterizeRow* threadWork = allocator->New<WorkLightmapRasterizeRow>(squareSize);
+    triangles_ = (int)model.triangles.size; // NOTE logging purposes only
 
     for (uint64 i = 0; i < model.triangles.size; i++) {
 #if RESTRICT_WALL
         if (i / 2 != PLANE_TO_LIGHT) continue;
 #endif
 
-        const Vertex v1 = model.triangles[i].v[0];
-        const Vertex v2 = model.triangles[i].v[1];
-        const Vertex v3 = model.triangles[i].v[2];
+        triangleInd_ = (int)i; // NOTE logging purposes only
+
+        const Vertex v0 = model.triangles[i].v[0];
+        const Vertex v1 = model.triangles[i].v[1];
+        const Vertex v2 = model.triangles[i].v[2];
 
         const Vec2 minUv = {
-            MinFloat32(v1.uv.x, MinFloat32(v2.uv.x, v3.uv.x)),
-            MinFloat32(v1.uv.y, MinFloat32(v2.uv.y, v3.uv.y))
+            MinFloat32(v0.uv.x, MinFloat32(v1.uv.x, v2.uv.x)),
+            MinFloat32(v0.uv.y, MinFloat32(v1.uv.y, v2.uv.y))
         };
         const Vec2 maxUv = {
-            MaxFloat32(v1.uv.x, MaxFloat32(v2.uv.x, v3.uv.x)),
-            MaxFloat32(v1.uv.y, MaxFloat32(v2.uv.y, v3.uv.y))
+            MaxFloat32(v0.uv.x, MaxFloat32(v1.uv.x, v2.uv.x)),
+            MaxFloat32(v0.uv.y, MaxFloat32(v1.uv.y, v2.uv.y))
         };
         const int minPixelY = MaxInt((int)(minUv.y * squareSize) - LIGHTMAP_PIXEL_MARGIN, 0);
         const int maxPixelY = MinInt((int)(maxUv.y * squareSize) + LIGHTMAP_PIXEL_MARGIN, squareSize);
+        int workInd = 0;
         for (int y = minPixelY; y < maxPixelY; y++) {
             const float32 uvY = (float32)y / squareSize;
+            const float32 t0 = (uvY - v0.uv.y) / (v1.uv.y - v0.uv.y);
+            const float32 x0 = v0.uv.x + (v1.uv.x - v0.uv.x) * t0;
             const float32 t1 = (uvY - v1.uv.y) / (v2.uv.y - v1.uv.y);
             const float32 x1 = v1.uv.x + (v2.uv.x - v1.uv.x) * t1;
-            const float32 t2 = (uvY - v2.uv.y) / (v3.uv.y - v2.uv.y);
-            const float32 x2 = v2.uv.x + (v3.uv.x - v2.uv.x) * t2;
-            const float32 t3 = (uvY - v3.uv.y) / (v1.uv.y - v3.uv.y);
-            const float32 x3 = v3.uv.x + (v1.uv.x - v3.uv.x) * t3;
+            const float32 t2 = (uvY - v2.uv.y) / (v0.uv.y - v2.uv.y);
+            const float32 x2 = v2.uv.x + (v0.uv.x - v2.uv.x) * t2;
             float32 minX = maxUv.x;
+            if (x0 >= minUv.x && x0 < minX) {
+                minX = x0;
+            }
             if (x1 >= minUv.x && x1 < minX) {
                 minX = x1;
             }
             if (x2 >= minUv.x && x2 < minX) {
                 minX = x2;
             }
-            if (x3 >= minUv.x && x3 < minX) {
-                minX = x3;
-            }
             float32 maxX = minUv.x;
+            if (x0 <= maxUv.x && x0 > maxX) {
+                maxX = x0;
+            }
             if (x1 <= maxUv.x && x1 > maxX) {
                 maxX = x1;
             }
             if (x2 <= maxUv.x && x2 > maxX) {
                 maxX = x2;
             }
-            if (x3 <= maxUv.x && x3 > maxX) {
-                maxX = x3;
-            }
             const int minPixelX = MaxInt((int)(minX * squareSize) - LIGHTMAP_PIXEL_MARGIN, 0);
             const int maxPixelX = MinInt((int)(maxX * squareSize) + LIGHTMAP_PIXEL_MARGIN, squareSize);
-            for (int x = minPixelX; x < maxPixelX; x++) {
-                const float32 uvX = (float32)x / squareSize;
-                const Vec3 bC = BarycentricCoordinates(Vec2 { uvX, uvY }, v1.uv, v2.uv, v3.uv);
-                const Vec3 pos = v1.pos * bC.x + v2.pos * bC.y + v3.pos * bC.z;
-                const Vec3 normal = v1.normal; // NOTE: we're flat-shading, so normals are all the same
-
-                const Vec3 raycastColor = RaycastColor(LIGHTMAP_NUM_HEMISPHERE_SAMPLES, hemisphereSamples,
-                                                       pos, normal, geometry);
-                uint8 r = (uint8)(raycastColor.r * 255.0f);
-                uint8 g = (uint8)(raycastColor.g * 255.0f);
-                uint8 b = (uint8)(raycastColor.b * 255.0f);
-                uint8 a = 0xff;
-                pixels[y * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
+            const int numPixelsX = maxPixelX - minPixelX;
+            if (numPixelsX < 0) {
+                continue; // TODO wtf? look into this, it actually happens...
             }
-            LOG_INFO("triangle %llu/%llu: row rasterized [%d | %d | %d), %d pixels\n",
-                     i + 1, model.triangles.size, minPixelY, y, maxPixelY, maxPixelX - minPixelX);
+            else if (numPixelsX < MIN_THREAD_PIXEL_ROW_LENGTH) {
+                LightmapRasterizeRow(squareSize, minPixelX, maxPixelX, y, v0, v1, v2,
+                                     hemisphereSamplesArray, geometry, pixels);
+            }
+            else {
+                WorkLightmapRasterizeRow* work = threadWork + workInd++;
+                work->squareSize = squareSize;
+                work->pixels = pixels;
+                work->minPixelX = minPixelX;
+                work->maxPixelX = maxPixelX;
+                work->pixelY = y;
+                work->v0 = v0;
+                work->v1 = v1;
+                work->v2 = v2;
+                work->hemisphereSamples = hemisphereSamplesArray;
+                work->geometry = &geometry;
+                DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
+            }
+
+            // TODO maybe have a check for tiny triangles (under some UV area) where we don't use threads?
+            // seems to be way too much overhead for the smaller geometry
         }
+
+        CompleteAllWork(queue);
     }
 }
 
-bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
+struct DumbWork
 {
-#if 0
-    WorkQueue queue;
+    string stringToPrint;
+};
 
-    SYSTEM_INFO systemInfo;
-    GetSystemInfo(&systemInfo);
-    LOG_INFO("# processors: %d\n", systemInfo.dwNumberOfProcessors);
-    DynamicArray<WorkerThread, LinearAllocator> threads(systemInfo.dwNumberOfProcessors, allocator);
-    for (int i = 0; i < systemInfo.dwNumberOfProcessors; i++) {
-        WorkerThread* thread = threads.Append();
-        if (!SpawnWorkerThread(&queue, thread)) {
-            return false;
-        }
-    }
-    // TODO defer call some way of clearing queue and stopping all worker threads?
-    // Could also just keep them alive and sleeping...
-#endif
+void DumbWorkCallback(void* data)
+{
+    DumbWork* work = (DumbWork*)data;
+    LOG_INFO("%.*s\n", (int)work->stringToPrint.size, work->stringToPrint.data);
+}
 
+bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllocator* allocator)
+{
     RaycastGeometry geometry;
     DynamicArray<RaycastMesh, LinearAllocator> meshes(allocator);
     for (uint64 i = 0; i < obj.models.size; i++) {
@@ -419,11 +430,13 @@ bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
     DebugTimer lightmapTimer = StartDebugTimer();
 
 #if RESTRICT_LIGHTING
-    for (uint64 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[m++])
+    for (uint64 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[++m])
 #else
     for (uint64 i = 0; i < obj.models.size; i++)
 #endif
     {
+        LOG_INFO("Lighting model %llu\n", i);
+
         auto state = allocator->SaveState();
         defer(allocator->LoadState(state));
 
@@ -441,7 +454,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, LinearAllocator* allocator)
             return false;
         }
 
-        CalculateLightmapForModel(obj.models[i], geometry, squareSize, pixels);
+        CalculateLightmapForModel(obj.models[i], geometry, queue, allocator, squareSize, pixels);
 
         const char* filePath = ToCString(AllocPrintf(allocator, "data/lightmaps/%llu.png", i), allocator);
         stbi_write_png(filePath, squareSize, squareSize, 4, pixels, 0);
@@ -464,18 +477,39 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     if (!memory->initialized) {
         appState->totalElapsed = 0.0f;
-        appState->cameraPos = Vec3 { -5.0f, 0.0f, 1.0f };
+        appState->cameraPos = Vec3 { -1.0f, 0.0f, 1.0f };
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
         memory->initialized = true;
     }
 
-    if (KeyDown(input, KM_KEY_L)) {
+    if (KeyDown(input, KM_KEY_T)) {
+        const_string strings[] = {
+            ToString("hello sailor 0"),
+            ToString("hello sailor 1"),
+            ToString("hello sailor 2"),
+            ToString("hello sailor 3"),
+            ToString("hello sailor 4"),
+            ToString("hello sailor 5"),
+            ToString("hello sailor 6"),
+        };
+        DumbWork work[C_ARRAY_LENGTH(strings)];
+        for (int i = 0; i < C_ARRAY_LENGTH(strings); i++) {
+            work[i].stringToPrint = ToNonConstString(strings[i]);
+            if (!TryAddWork(queue, DumbWorkCallback, (void*)&work[i])) {
+                DEBUG_PANIC("Queue is full\n");
+            }
+        }
+
+        CompleteAllWork(queue);
+        LOG_INFO("Done with all queued work\n");
+    }
+    if (KeyPressed(input, KM_KEY_L)) {
         LinearAllocator allocator(memory->transient);
 
         LoadObjResult obj;
         if (LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
-            if (GenerateLightmaps(obj, &allocator)) {
+            if (GenerateLightmaps(obj, queue, &allocator)) {
                 AppUnloadVulkanState(vulkanState, memory);
                 if (!AppLoadVulkanState(vulkanState, memory)) {
                     LOG_ERROR("Failed to reload Vulkan state after lightmap generation\n");
