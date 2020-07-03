@@ -15,13 +15,13 @@ const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
 
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    7
+    3
 };
 
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 1
+#define RESTRICT_WALL 0
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
@@ -261,7 +261,6 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint64 m
                                        LinearAllocator* allocator, int squareSize, uint32* pixels)
 {
     const int LIGHTMAP_PIXEL_MARGIN = 1;
-    const int MIN_THREAD_PIXEL_ROW_LENGTH = 0;
     auto allocatorState = allocator->SaveState();
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
@@ -333,29 +332,23 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint64 m
                 numPixels = 1;
             }
 
-            if (numPixels < MIN_THREAD_PIXEL_ROW_LENGTH) {
-                LightmapRasterizeRow(squareSize, minPixelX, maxPixelX, y, triangle, hemisphereSamplesArray, geometry,
-                                     pixels);
+            WorkLightmapRasterizeRow* work = allocator->New<WorkLightmapRasterizeRow>();
+            if (work == nullptr) {
+                CompleteAllWork(queue);
+                allocator->LoadState(allocatorState);
+                work = allocator->New<WorkLightmapRasterizeRow>();
+                DEBUG_ASSERT(work != nullptr);
             }
-            else {
-                WorkLightmapRasterizeRow* work = allocator->New<WorkLightmapRasterizeRow>();
-                if (work == nullptr) {
-                    CompleteAllWork(queue);
-                    allocator->LoadState(allocatorState);
-                    work = allocator->New<WorkLightmapRasterizeRow>();
-                    DEBUG_ASSERT(work != nullptr);
-                }
-                work->common = &workCommon;
-                work->minPixelX = minPixelX;
-                work->maxPixelX = maxPixelX;
-                work->pixelY = y;
-                work->triangle = triangle;
-                if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
-                    LOG_INFO("flush queue. model %llu, triangle %llu/%llu, row [%d, %d, %d)\n",
-                             meshInd, i + 1, mesh.triangles.size, minPixelY, y, maxPixelY);
-                    CompleteAllWork(queue);
-                    DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
-                }
+            work->common = &workCommon;
+            work->minPixelX = minPixelX;
+            work->maxPixelX = maxPixelX;
+            work->pixelY = y;
+            work->triangle = triangle;
+            if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
+                LOG_INFO("flush queue. model %llu, triangle %llu/%llu, row [%d, %d, %d)\n",
+                         meshInd, i + 1, mesh.triangles.size, minPixelY, y, maxPixelY);
+                CompleteAllWork(queue);
+                DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
             }
         }
     }
