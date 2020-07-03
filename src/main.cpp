@@ -22,7 +22,7 @@
 // 6 - some other rock
 // 7 - walls
 
-#define RESTRICT_LIGHTING 1
+#define RESTRICT_LIGHTING 0
 const int MODELS_TO_LIGHT[] = {
     2
 };
@@ -44,7 +44,7 @@ const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
 const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 256.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 128;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 256;
 const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
 
 struct DebugTimer
