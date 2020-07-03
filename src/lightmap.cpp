@@ -2,6 +2,9 @@
 
 #include <stb_image_write.h>
 
+const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 64.0f;
+const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+
 // MODEL INDICES:
 // 0, 1, 2 - some rocks
 // 3 - box, left
@@ -24,6 +27,50 @@ const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
 const uint64 PLANE_FLOOR = 3;
 #define PLANE_TO_LIGHT PLANE_FLOOR
+
+struct DebugTimer
+{
+    static bool initialized;
+    static uint64 win32Freq;
+
+    uint64 cycles;
+    uint64 win32Time;
+};
+
+bool DebugTimer::initialized = false;
+uint64 DebugTimer::win32Freq;
+
+DebugTimer StartDebugTimer()
+{
+    if (!DebugTimer::initialized) {
+        DebugTimer::initialized = true;
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        DebugTimer::win32Freq = freq.QuadPart;
+    }
+
+    DebugTimer timer;
+    LARGE_INTEGER win32Time;
+    QueryPerformanceCounter(&win32Time);
+    timer.win32Time = win32Time.QuadPart;
+    timer.cycles = __rdtsc();
+    return timer;
+}
+
+void StopDebugTimer(DebugTimer* timer)
+{
+    LARGE_INTEGER win32End;
+    QueryPerformanceCounter(&win32End);
+    timer->cycles = __rdtsc() - timer->cycles;
+    timer->win32Time = win32End.QuadPart - timer->win32Time;
+}
+
+void StopAndPrintDebugTimer(DebugTimer* timer)
+{
+    StopDebugTimer(timer);
+    const float32 win32Time = (float32)timer->win32Time / DebugTimer::win32Freq * 1000.0f;
+    LOG_INFO("Timer: %.03fms | %llu MC | %llu C\n", win32Time, timer->cycles / 1000000, timer->cycles);
+}
 
 struct LightRect
 {
@@ -116,7 +163,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
             if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max, &tAABB)) {
                 continue;
             }
-            // TODO slightly untested?
+            // TODO slightly untested... does this actually work?
             if (tAABB > closestIntersectDist) {
                 continue;
             }

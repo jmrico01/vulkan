@@ -14,59 +14,13 @@
 #include "lightmap.h"
 #include "load_obj.h"
 
+// Required for platform main
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
-
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 64.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
 const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
-
-struct DebugTimer
-{
-    static bool initialized;
-    static uint64 win32Freq;
-
-    uint64 cycles;
-    uint64 win32Time;
-};
-
-bool DebugTimer::initialized = false;
-uint64 DebugTimer::win32Freq;
-
-DebugTimer StartDebugTimer()
-{
-    if (!DebugTimer::initialized) {
-        DebugTimer::initialized = true;
-        LARGE_INTEGER freq;
-        QueryPerformanceFrequency(&freq);
-        DebugTimer::win32Freq = freq.QuadPart;
-    }
-
-    DebugTimer timer;
-    LARGE_INTEGER win32Time;
-    QueryPerformanceCounter(&win32Time);
-    timer.win32Time = win32Time.QuadPart;
-    timer.cycles = __rdtsc();
-    return timer;
-}
-
-void StopDebugTimer(DebugTimer* timer)
-{
-    LARGE_INTEGER win32End;
-    QueryPerformanceCounter(&win32End);
-    timer->cycles = __rdtsc() - timer->cycles;
-    timer->win32Time = win32End.QuadPart - timer->win32Time;
-}
-
-void StopAndPrintDebugTimer(DebugTimer* timer)
-{
-    StopDebugTimer(timer);
-    const float32 win32Time = (float32)timer->win32Time / DebugTimer::win32Freq * 1000.0f;
-    LOG_INFO("Timer: %.03fms | %llu MC | %llu C\n", win32Time, timer->cycles / 1000000, timer->cycles);
-}
 
 struct UniformBufferObject
 {

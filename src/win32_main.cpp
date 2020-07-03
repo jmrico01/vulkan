@@ -1,5 +1,7 @@
 #include <Windows.h>
 
+#include <intrin.h>
+
 #include <km_common/km_input.h>
 
 #include "app_main.h"
