@@ -1,9 +1,13 @@
 #include "lightmap.h"
 
 #include <stb_image_write.h>
+#include <time.h>
 
-const float32 LIGHTMAP_RESOLUTION_PER_WORLD_UNIT = 64.0f;
-const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
+const float32 RESOLUTION_PER_WORLD_UNIT = 64.0f;
+const uint32 NUM_HEMISPHERE_SAMPLES = 64;
+const uint32 SAMPLES_PER_GROUP = 8;
+static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
+const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
 
 // MODEL INDICES:
 // 0, 1, 2 - some rocks
@@ -18,7 +22,7 @@ const int MODELS_TO_LIGHT[] = {
     7
 };
 
-#define RESTRICT_OCCLUSION 1
+#define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
 #define RESTRICT_WALL 3
@@ -99,23 +103,6 @@ struct RaycastGeometry
     Array<RaycastMesh> meshes;
 };
 
-// Provides a metric that is lower the closer together 2 unit direction vectors are (can be negative)
-float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
-{
-    return -Dot(dir1, dir2);
-}
-
-float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[8])
-{
-    float32 closeness = 0.0f;
-    for (uint32 i = 0; i < 8; i++) {
-        for (uint32 j = i + 1; j < 8; j++) {
-            closeness += HemisphereDirCloseness(samples[groupIndices[i]], samples[groupIndices[j]]);
-        }
-    }
-    return closeness;
-}
-
 void GenerateHemisphereSamples(Array<Vec3> samples)
 {
     for (uint32 i = 0; i < samples.size; i++) {
@@ -130,10 +117,36 @@ void GenerateHemisphereSamples(Array<Vec3> samples)
     }
 }
 
-void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
+struct SampleGroup
+{
+    StaticArray<Vec3, SAMPLES_PER_GROUP> group;
+};
+
+// Provides a metric that is lower the closer together 2 unit direction vectors are (can be negative)
+float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
+{
+    return -Dot(dir1, dir2);
+}
+
+float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[SAMPLES_PER_GROUP])
+{
+    float32 closeness = 0.0f;
+    for (uint32 i = 0; i < 8; i++) {
+        for (uint32 j = i + 1; j < 8; j++) {
+            closeness += HemisphereDirCloseness(samples[groupIndices[i]], samples[groupIndices[j]]);
+        }
+    }
+    return closeness;
+}
+
+void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, LinearAllocator* allocator)
 {
     ALLOCATOR_SCOPE_RESET(*allocator);
 
+    Array<Vec3> samples = {
+        .size = sampleGroups.size * SAMPLES_PER_GROUP,
+        .data = &sampleGroups[0].group[0]
+    };
     GenerateHemisphereSamples(samples);
 
     DEBUG_ASSERT(samples.size % 8 == 0);
@@ -148,7 +161,6 @@ void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
     srand(seed);
 
     const uint32 ITERATIONS = 10000;
-
     Array<int> minIndices = allocator->NewArray<int>(samples.size);
     float32 minCloseness = 1e8;
     for (uint32 n = 0; n < ITERATIONS; n++) {
@@ -168,9 +180,18 @@ void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
     for (uint32 i = 0; i < samples.size; i++) {
         samples[i] = samplesCopy[minIndices[i]];
     }
+
+    for (uint32 i = 0; i < samples.size; i++) {
+        indices[i] = i;
+    }
+    float32 totalCloseness = 0.0f;
+    for (uint32 i = 0; i < numGroups; i++) {
+        totalCloseness += HemisphereGroupCloseness(samples, &indices[i * 8]);
+    }
+    LOG_INFO("hemisphere closeness: %f\n", totalCloseness);
 }
 
-internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const RaycastGeometry& geometry)
+internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 normal, const RaycastGeometry& geometry)
 {
     // For reference: left wall is at  Y =  1.498721
     //                right wall is at Y = -1.544835
@@ -191,78 +212,81 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
         },
     };
 
+    const uint32 numSamples = sampleGroups.size * SAMPLES_PER_GROUP;
+
     // NOTE this will do unknown-ish things with "up" direction
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
-    // TODO hit this with some spicy AVX, 8 samples at a time
-    // We will want to bundle rays with similar directions
     Vec3 outputColor = ambient;
-    for (uint32 i = 0; i < samples.size; i++) {
-        const Vec3 sampleNormal = xToNormalRot * samples[i];
-        const Vec3 sampleNormalInv = {
-            1.0f / sampleNormal.x,
-            1.0f / sampleNormal.y,
-            1.0f / sampleNormal.z
-        };
+    for (uint32 m = 0; m < sampleGroups.size; m++) {
+        // TODO hit this with some spicy AVX, 8 samples at a time
+        for (uint32 n = 0; n < SAMPLES_PER_GROUP; n++) {
+            const Vec3 sampleNormal = xToNormalRot * sampleGroups[m].group[n];
+            const Vec3 sampleNormalInv = {
+                1.0f / sampleNormal.x,
+                1.0f / sampleNormal.y,
+                1.0f / sampleNormal.z
+            };
 
-        const float32 offset = 0.001f;
-        const Vec3 originOffset = pos + sampleNormal * offset;
+            const float32 offset = 0.001f;
+            const Vec3 originOffset = pos + sampleNormal * offset;
 
-        float32 closestIntersectDist = 1e8;
-        const RaycastTriangle* closestTriangle = nullptr;
-        for (uint32 j = 0; j < geometry.meshes.size; j++) {
+            float32 closestIntersectDist = 1e8;
+            const RaycastTriangle* closestTriangle = nullptr;
+            for (uint32 j = 0; j < geometry.meshes.size; j++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
-            if (j != MODEL_TO_OCCLUDE) continue;
+                if (j != MODEL_TO_OCCLUDE) continue;
 #endif
-            const RaycastMesh& mesh = geometry.meshes[j];
-            float32 tAABB;
-            if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max, &tAABB)) {
-                continue;
-            }
-            // TODO slightly untested... does this actually work?
-            if (tAABB > closestIntersectDist) {
-                continue;
-            }
+                const RaycastMesh& mesh = geometry.meshes[j];
+                float32 tAABB;
+                if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max, &tAABB)) {
+                    continue;
+                }
+                // TODO slightly untested... does this actually work?
+                if (tAABB > closestIntersectDist) {
+                    continue;
+                }
 
-            for (uint32 k = 0; k < geometry.meshes[j].triangles.size; k++) {
-                const RaycastTriangle& triangle = geometry.meshes[j].triangles[k];
-                float32 dot = Dot(sampleNormal, triangle.normal);
-                if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
+                for (uint32 k = 0; k < geometry.meshes[j].triangles.size; k++) {
+                    const RaycastTriangle& triangle = geometry.meshes[j].triangles[k];
+                    float32 dot = Dot(sampleNormal, triangle.normal);
+                    if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
 
-                float32 t;
-                if (RayTriangleIntersection(originOffset, sampleNormal,
-                                            triangle.pos[0], triangle.pos[1], triangle.pos[2], &t)) {
-                    if (t > 0.0f && t < closestIntersectDist) {
-                        closestIntersectDist = t;
-                        closestTriangle = &triangle;
+                    float32 t;
+                    if (RayTriangleIntersection(originOffset, sampleNormal,
+                                                triangle.pos[0], triangle.pos[1], triangle.pos[2], &t)) {
+                        if (t > 0.0f && t < closestIntersectDist) {
+                            closestIntersectDist = t;
+                            closestTriangle = &triangle;
+                        }
                     }
                 }
             }
-        }
 
-        for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
-            const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
-            const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
-            const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
-            const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
-            const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
+            for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
+                const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
+                const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
+                const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
+                const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
+                const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
 
-            float32 t;
-            if (!RayPlaneIntersection(pos, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &t)) {
-                continue;
-            }
-            if (t < 0.0f || t > closestIntersectDist) {
-                continue;
-            }
+                float32 t;
+                if (!RayPlaneIntersection(pos, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &t)) {
+                    continue;
+                }
+                if (t < 0.0f || t > closestIntersectDist) {
+                    continue;
+                }
 
-            const Vec3 intersect = pos + t * sampleNormal;
-            const Vec3 rectOriginToIntersect = intersect - LIGHT_RECTS[l].origin;
-            const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
-            const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
-            if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
-                const float32 lightIntensity = LIGHT_RECTS[l].intensity / samples.size;
-                outputColor += lightIntensity * LIGHT_RECTS[l].color;
+                const Vec3 intersect = pos + t * sampleNormal;
+                const Vec3 rectOriginToIntersect = intersect - LIGHT_RECTS[l].origin;
+                const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
+                const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
+                if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
+                    const float32 lightIntensity = LIGHT_RECTS[l].intensity / numSamples;
+                    outputColor += lightIntensity * LIGHT_RECTS[l].color;
+                }
             }
         }
     }
@@ -276,7 +300,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
 struct WorkLightmapRasterizeRowCommon
 {
     int squareSize;
-    Array<Vec3> hemisphereSamples;
+    Array<SampleGroup> hemisphereSampleGroups;
     const RaycastGeometry* geometry;
     uint32* pixels;
 };
@@ -289,7 +313,7 @@ struct WorkLightmapRasterizeRow
 };
 
 void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixelY, const RaycastTriangle& triangle,
-                          Array<Vec3> hemisphereSamples, const RaycastGeometry& geometry, uint32* pixels)
+                          Array<SampleGroup> hemisphereSampleGroups, const RaycastGeometry& geometry, uint32* pixels)
 {
     const float32 uvY = (float32)pixelY / squareSize;
     for (int x = minPixelX; x < maxPixelX; x++) {
@@ -297,7 +321,7 @@ void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixe
         const Vec3 bC = BarycentricCoordinates(Vec2 { uvX, uvY }, triangle.uvs[0], triangle.uvs[1], triangle.uvs[2]);
         const Vec3 p = triangle.pos[0] * bC.x + triangle.pos[1] * bC.y + triangle.pos[2] * bC.z;
 
-        const Vec3 raycastColor = RaycastColor(hemisphereSamples, p, triangle.normal, geometry);
+        const Vec3 raycastColor = RaycastColor(hemisphereSampleGroups, p, triangle.normal, geometry);
         uint8 r = (uint8)(raycastColor.r * 255.0f);
         uint8 g = (uint8)(raycastColor.g * 255.0f);
         uint8 b = (uint8)(raycastColor.b * 255.0f);
@@ -310,7 +334,7 @@ void ThreadLightmapRasterizeRow(void* data)
 {
     WorkLightmapRasterizeRow* workData = (WorkLightmapRasterizeRow*)data;
     LightmapRasterizeRow(workData->common->squareSize, workData->minPixelX, workData->maxPixelX, workData->pixelY,
-                         workData->triangle, workData->common->hemisphereSamples, *workData->common->geometry,
+                         workData->triangle, workData->common->hemisphereSampleGroups, *workData->common->geometry,
                          workData->common->pixels);
 }
 
@@ -321,13 +345,13 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
-    StaticArray<Vec3, LIGHTMAP_NUM_HEMISPHERE_SAMPLES> hemisphereSamples;
-    Array<Vec3> hemisphereSamplesArray = hemisphereSamples.ToArray();
-    GenerateHemisphereSamples(hemisphereSamplesArray, allocator);
+    StaticArray<SampleGroup, NUM_HEMISPHERE_SAMPLE_GROUPS> hemisphereSampleGroups;
+    Array<SampleGroup> hemisphereSampleGroupsArray = hemisphereSampleGroups.ToArray();
+    GenerateHemisphereSampleGroups(hemisphereSampleGroupsArray, allocator);
 
     const WorkLightmapRasterizeRowCommon workCommon = {
         .squareSize = squareSize,
-        .hemisphereSamples = hemisphereSamplesArray,
+        .hemisphereSampleGroups = hemisphereSampleGroupsArray,
         .geometry = &geometry,
         .pixels = pixels
     };
@@ -468,7 +492,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
             const RaycastTriangle& triangle = geometry.meshes[i].triangles[j];
             surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
         }
-        const int size = (int)(sqrt(surfaceArea) * LIGHTMAP_RESOLUTION_PER_WORLD_UNIT);
+        const int size = (int)(sqrt(surfaceArea) * RESOLUTION_PER_WORLD_UNIT);
         const int squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
 
         uint32* pixels = allocator->New<uint32>(squareSize * squareSize);
