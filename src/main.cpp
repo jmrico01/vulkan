@@ -421,7 +421,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
     // but doesn't really need to be recreated with the swapchain
     {
         uint32_t totalVertices = 0;
-        for (uint64 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < obj.models.size; i++) {
             totalVertices += (uint32_t)obj.models[i].triangles.size * 3;
         }
         VkDeviceSize vertexBufferSize = totalVertices * sizeof(Vertex);
@@ -448,7 +448,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         void* data;
         vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
         uint64 offset = 0;
-        for (uint64 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < obj.models.size; i++) {
             const uint64 numBytes = obj.models[i].triangles.size * sizeof(MeshTriangle);
             MemCopy((char*)data + offset, obj.models[i].triangles.data, numBytes);
             offset += numBytes;
@@ -523,7 +523,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
     // Create lightmaps
     {
-        for (uint64 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < obj.models.size; i++) {
             const char* filePath = ToCString(AllocPrintf(&allocator, "data/lightmaps/%llu.png", i), &allocator);
             int width, height, channels;
             unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
@@ -584,7 +584,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
     {
         FixedArray<VkDescriptorSetLayout, VulkanAppState::MAX_LIGHTMAPS> layouts;
         layouts.Clear();
-        for (uint64 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < obj.models.size; i++) {
             layouts.Append(app->descriptorSetLayout);
         }
 
@@ -600,7 +600,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         }
         app->descriptorSets.size = obj.models.size;
 
-        for (uint64 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < obj.models.size; i++) {
             VkDescriptorBufferInfo bufferInfo = {};
             bufferInfo.buffer = app->uniformBuffer;
             bufferInfo.offset = 0;
@@ -647,7 +647,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             return false;
         }
 
-        for (uint64 i = 0; i < app->commandBuffers.size; i++) {
+        for (uint32 i = 0; i < app->commandBuffers.size; i++) {
             const VkCommandBuffer& buffer = app->commandBuffers[i];
 
             VkCommandBufferBeginInfo beginInfo = {};
@@ -656,7 +656,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             beginInfo.pInheritanceInfo = nullptr;
 
             if (vkBeginCommandBuffer(buffer, &beginInfo) != VK_SUCCESS) {
-                LOG_ERROR("vkBeginCommandBuffer failed for command buffer %llu\n", i);
+                LOG_ERROR("vkBeginCommandBuffer failed for command buffer %lu\n", i);
                 return false;
             }
 
@@ -683,7 +683,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
             uint32_t vertexStart = 0;
-            for (uint64 j = 0; j < obj.models.size; j++) {
+            for (uint32 j = 0; j < obj.models.size; j++) {
                 vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
                                         &app->descriptorSets[j], 0, nullptr);
 
@@ -695,7 +695,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             vkCmdEndRenderPass(buffer);
 
             if (vkEndCommandBuffer(buffer) != VK_SUCCESS) {
-                LOG_ERROR("vkEndCommandBuffer failed for command buffer %llu\n", i);
+                LOG_ERROR("vkEndCommandBuffer failed for command buffer %lu\n", i);
                 return false;
             }
         }
@@ -721,7 +721,7 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 
     vkDestroySampler(device, app->textureSampler, nullptr);
 
-    for (uint64 i = 0; i < app->lightmaps.size; i++) {
+    for (uint32 i = 0; i < app->lightmaps.size; i++) {
         vkDestroyImageView(device, app->lightmaps[i].view, nullptr);
         vkDestroyImage(device, app->lightmaps[i].image, nullptr);
         vkFreeMemory(device, app->lightmaps[i].memory, nullptr);

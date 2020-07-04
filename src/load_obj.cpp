@@ -28,7 +28,7 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
     DynamicArray<Vec3, LinearAllocator> positions(allocator);
     DynamicArray<Vec2, LinearAllocator> uvs(allocator);
     DynamicArray<MeshTriangle, LinearAllocator> triangles(allocator);
-    DynamicArray<uint64, LinearAllocator> modelEndTriangleInds(allocator);
+    DynamicArray<uint32, LinearAllocator> modelEndTriangleInds(allocator);
 
     string fileString = {
         .size = result->file.size,
@@ -148,8 +148,8 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
     }
 
     DynamicArray<ObjModel, LinearAllocator> models(allocator);
-    uint64 prevInd = 0;
-    for (uint64 i = 0; i < modelEndTriangleInds.size; i++) {
+    uint32 prevInd = 0;
+    for (uint32 i = 0; i < modelEndTriangleInds.size; i++) {
         ObjModel* model = models.Append();
         model->triangles = triangles.ToArray().Slice(prevInd, modelEndTriangleInds[i]);
         prevInd = modelEndTriangleInds[i];

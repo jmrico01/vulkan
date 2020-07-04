@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 
 #define LOG_ERROR(format, ...) fprintf(stderr, format, ##__VA_ARGS__)
 #define LOG_INFO(format, ...)  fprintf(stderr, format, ##__VA_ARGS__)
@@ -46,6 +47,8 @@ int main(int argc, char* argv[])
 {
     UNREFERENCED_PARAMETER(argc);
     UNREFERENCED_PARAMETER(argv);
+
+    srand((unsigned int)time(NULL));
 
     // Initialize memory
     const uint64 memoryBytes = GIGABYTES(1);

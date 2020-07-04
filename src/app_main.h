@@ -10,8 +10,8 @@
 struct AppMemory
 {
     bool initialized;
-    Array<uint8> permanent;
-    Array<uint8> transient;
+    LargeArray<uint8> permanent;
+    LargeArray<uint8> transient;
 };
 
 #define APP_WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);

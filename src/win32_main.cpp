@@ -386,7 +386,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 #endif
 
     // Initialize app memory
-    Array<uint8> totalMemory;
+    LargeArray<uint8> totalMemory;
     totalMemory.size = PERMANENT_MEMORY_SIZE + TRANSIENT_MEMORY_SIZE;
     totalMemory.data = (uint8*)VirtualAlloc(baseAddress, totalMemory.size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!totalMemory.data) {
@@ -418,7 +418,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             return 1;
         }
     }
-    LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchain.images.size);
+    LOG_INFO("Loaded Vulkan state, %lu swapchain images\n", vulkanState.swapchain.images.size);
 
     if (!AppLoadVulkanState(vulkanState, &appMemory)) {
         LOG_ERROR("AppLoadVulkanState failed\n");

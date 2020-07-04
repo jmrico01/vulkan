@@ -15,13 +15,13 @@ const int LIGHTMAP_NUM_HEMISPHERE_SAMPLES = 64;
 
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    3
+    7
 };
 
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 0
+#define RESTRICT_WALL 3
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
@@ -99,9 +99,28 @@ struct RaycastGeometry
     Array<RaycastMesh> meshes;
 };
 
-void GenerateHemisphereSamples(Array<Vec3> samples)
+// Provides a metric that is lower the closer together 2 unit direction vectors are (can be negative)
+float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
 {
-    for (uint64 i = 0; i < samples.size; i++) {
+    return -Dot(dir1, dir2);
+}
+
+float32 HemisphereGroupCloseness(const Array<Vec3>& samples, const StaticArray<int, 8>& groupInds)
+{
+    float32 closeness = 0.0f;
+    for (uint32 i = 0; i < 8; i++) {
+        for (uint32 j = i + 1; j < 8; j++) {
+            closeness += HemisphereDirCloseness(samples[groupInds[i]], samples[groupInds[j]]);
+        }
+    }
+    return closeness;
+}
+
+void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
+{
+    ALLOCATOR_SCOPE_RESET(*allocator);
+
+    for (uint32 i = 0; i < samples.size; i++) {
         Vec3 dir;
         do {
             dir.x = RandFloat32();
@@ -110,6 +129,39 @@ void GenerateHemisphereSamples(Array<Vec3> samples)
         } while (MagSq(dir) > 1.0f);
 
         samples[i] = Normalize(dir);
+    }
+
+    DEBUG_ASSERT(samples.size % 8 == 0);
+    const uint32 numGroups = samples.size / 8;
+    StaticArray<int, 8>* groupIndices = allocator->New<StaticArray<int, 8>>(numGroups);
+    for (uint32 i = 0; i < numGroups; i++) {
+        for (uint32 j = 0; j < 8; j++) {
+            groupIndices[i][j] = i * 8 + j;
+        }
+    }
+
+    const unsigned int seed = (unsigned int)time(NULL);
+    srand(seed);
+
+    const uint32 ITERATIONS = 10000;
+    uint32 minIteration = 0;
+    float32 minCloseness = 1e8;
+    for (uint32 n = 0; n < ITERATIONS; n++) {
+        samples.Shuffle();
+        float32 totalCloseness = 0.0f;
+        for (uint32 i = 0; i < numGroups; i++) {
+            totalCloseness += HemisphereGroupCloseness(samples, groupIndices[i]);
+        }
+        if (totalCloseness < minCloseness) {
+            minIteration = n;
+            minCloseness = totalCloseness;
+        }
+    }
+
+    // TODO Replicating the whole series of shuffles. Could be done by a more standardized PRNG
+    srand(seed);
+    for (uint32 n = 0; n <= minIteration; n++) {
+        samples.Shuffle();
     }
 }
 
@@ -141,7 +193,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
     // TODO hit this with some spicy AVX, 8 samples at a time
     // We will want to bundle rays with similar directions
     Vec3 outputColor = ambient;
-    for (uint64 i = 0; i < samples.size; i++) {
+    for (uint32 i = 0; i < samples.size; i++) {
         const Vec3 sampleNormal = xToNormalRot * samples[i];
         const Vec3 sampleNormalInv = {
             1.0f / sampleNormal.x,
@@ -154,7 +206,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
 
         float32 closestIntersectDist = 1e8;
         const RaycastTriangle* closestTriangle = nullptr;
-        for (int j = 0; j < geometry.meshes.size; j++) {
+        for (uint32 j = 0; j < geometry.meshes.size; j++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
             if (j != MODEL_TO_OCCLUDE) continue;
 #endif
@@ -168,7 +220,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
                 continue;
             }
 
-            for (int k = 0; k < geometry.meshes[j].triangles.size; k++) {
+            for (uint32 k = 0; k < geometry.meshes[j].triangles.size; k++) {
                 const RaycastTriangle& triangle = geometry.meshes[j].triangles[k];
                 float32 dot = Dot(sampleNormal, triangle.normal);
                 if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
@@ -257,17 +309,16 @@ void ThreadLightmapRasterizeRow(void* data)
                          workData->common->pixels);
 }
 
-internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint64 meshInd, AppWorkQueue* queue,
+internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
                                        LinearAllocator* allocator, int squareSize, uint32* pixels)
 {
     const int LIGHTMAP_PIXEL_MARGIN = 1;
-    auto allocatorState = allocator->SaveState();
 
     MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
     StaticArray<Vec3, LIGHTMAP_NUM_HEMISPHERE_SAMPLES> hemisphereSamples;
     Array<Vec3> hemisphereSamplesArray = hemisphereSamples.ToArray();
-    GenerateHemisphereSamples(hemisphereSamplesArray);
+    GenerateHemisphereSamples(hemisphereSamplesArray, allocator);
 
     const WorkLightmapRasterizeRowCommon workCommon = {
         .squareSize = squareSize,
@@ -275,9 +326,10 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint64 m
         .geometry = &geometry,
         .pixels = pixels
     };
+    auto allocatorState = allocator->SaveState();
 
     const RaycastMesh& mesh = geometry.meshes[meshInd];
-    for (uint64 i = 0; i < mesh.triangles.size; i++) {
+    for (uint32 i = 0; i < mesh.triangles.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_WALL
         if (i / 2 != PLANE_TO_LIGHT) continue;
 #endif
@@ -345,7 +397,7 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint64 m
             work->pixelY = y;
             work->triangle = triangle;
             if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
-                LOG_INFO("flush queue. model %llu, triangle %llu/%llu, row [%d, %d, %d)\n",
+                LOG_INFO("flush queue. model %lu, triangle %lu/%lu, row [%d, %d, %d)\n",
                          meshInd, i + 1, mesh.triangles.size, minPixelY, y, maxPixelY);
                 CompleteAllWork(queue);
                 DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
@@ -361,9 +413,9 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
 {
     RaycastGeometry geometry;
     DynamicArray<RaycastMesh, LinearAllocator> meshes(allocator);
-    for (uint64 i = 0; i < obj.models.size; i++) {
+    for (uint32 i = 0; i < obj.models.size; i++) {
         DynamicArray<RaycastTriangle, LinearAllocator> triangles(allocator);
-        for (uint64 j = 0; j < obj.models[i].triangles.size; j++) {
+        for (uint32 j = 0; j < obj.models[i].triangles.size; j++) {
             const MeshTriangle& triangle = obj.models[i].triangles[j];
             RaycastTriangle* newTriangle = triangles.Append();
             newTriangle->pos[0] = triangle.v[0].pos;
@@ -379,7 +431,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
         mesh->triangles = triangles.ToArray();
         mesh->min = Vec3::one * 1e8;
         mesh->max = -Vec3::one * 1e8;
-        for (uint64 j = 0; j < triangles.size; j++) {
+        for (uint32 j = 0; j < triangles.size; j++) {
             for (int k = 0; k < 3; k++) {
                 const Vec3 v = triangles[j].pos[k];
                 for (int e = 0; e < 3; e++) {
@@ -398,18 +450,16 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
     DebugTimer lightmapTimer = StartDebugTimer();
 
 #if RESTRICT_LIGHTING
-    for (uint64 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[++m])
+    for (uint32 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[++m])
 #else
-    for (uint64 i = 0; i < geometry.meshes.size; i++)
+    for (uint32 i = 0; i < geometry.meshes.size; i++)
 #endif
     {
-        LOG_INFO("Lighting model %llu\n", i);
-
-        auto state = allocator->SaveState();
-        defer(allocator->LoadState(state));
+        LOG_INFO("Lighting model %lu\n", i);
+        ALLOCATOR_SCOPE_RESET(*allocator);
 
         float32 surfaceArea = 0.0f;
-        for (int j = 0; j < geometry.meshes[i].triangles.size; j++) {
+        for (uint32 j = 0; j < geometry.meshes[i].triangles.size; j++) {
             const RaycastTriangle& triangle = geometry.meshes[i].triangles[j];
             surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
         }
@@ -418,7 +468,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
 
         uint32* pixels = allocator->New<uint32>(squareSize * squareSize);
         if (pixels == nullptr) {
-            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %llu\n", squareSize, squareSize, i);
+            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %lu\n", squareSize, squareSize, i);
             return false;
         }
 
