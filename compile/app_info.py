@@ -52,8 +52,8 @@ TARGET_BENCHMARK = BuildTarget("lightmap_benchmark",
 )
 
 TARGETS = [
-    # TARGET_APP,
-    TARGET_BENCHMARK
+    TARGET_APP,
+    # TARGET_BENCHMARK
 ]
 
 COPY_DIRS = [
