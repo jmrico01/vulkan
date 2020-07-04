@@ -14,6 +14,8 @@
 #include "lightmap.h"
 #include "load_obj.h"
 
+#define ENABLE_THREADS 1
+
 // Required for platform main
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;

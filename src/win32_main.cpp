@@ -454,10 +454,13 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GetSystemInfo(&systemInfo);
         int numThreads = systemInfo.dwNumberOfProcessors - 1;
         if (numThreads > MAX_THREADS) {
-            LOG_ERROR("Whoa, hello future! This machine has too many processors: %d\n", systemInfo.dwNumberOfProcessors);
-            LOG_FLUSH();
-            return 1;
+            LOG_INFO("Whoa, hello future! Machine has too many processors: %d, clamping to %d\n",
+                     systemInfo.dwNumberOfProcessors, MAX_THREADS);
+            numThreads = MAX_THREADS;
         }
+#if !ENABLE_THREADS
+        numThreads = 0;
+#endif
         for (int i = 0; i < numThreads; i++) {
             HANDLE* handle = threadHandles.Append();
             *handle = CreateThread(NULL, 0, WorkerThreadProc, &appWorkQueue, 0, NULL);

@@ -1,13 +1,8 @@
 #include "lightmap.h"
 
+#include <intrin.h>
 #include <stb_image_write.h>
 #include <time.h>
-
-const float32 RESOLUTION_PER_WORLD_UNIT = 64.0f;
-const uint32 NUM_HEMISPHERE_SAMPLES = 64;
-const uint32 SAMPLES_PER_GROUP = 8;
-static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
-const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
 
 // MODEL INDICES:
 // 0, 1, 2 - some rocks
@@ -17,6 +12,8 @@ const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER
 // 6 - some other rock
 // 7 - walls
 
+#define ENABLE_AVX 0
+
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
     7
@@ -25,12 +22,222 @@ const int MODELS_TO_LIGHT[] = {
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 3
+#define RESTRICT_WALL 0
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
 const uint64 PLANE_FLOOR = 3;
 #define PLANE_TO_LIGHT PLANE_FLOOR
+
+const float32 RESOLUTION_PER_WORLD_UNIT = 256.0f;
+const uint32 NUM_HEMISPHERE_SAMPLES = 256;
+const uint32 SAMPLES_PER_GROUP = 8;
+static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
+const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
+
+// SIMD helpers ------------------------------------------------------------------------
+
+struct Vec3_8
+{
+    __m256 x, y, z;
+};
+
+struct Quat_8
+{
+    __m256 x, y, z, w;
+};
+
+Vec3_8 Set1Vec3_8(Vec3 v)
+{
+    return Vec3_8 { _mm256_set1_ps(v.x), _mm256_set1_ps(v.y), _mm256_set1_ps(v.z) };
+}
+
+Vec3_8 SetVec3_8(const StaticArray<Vec3, 8>& vs)
+{
+    return Vec3_8 {
+        .x = _mm256_set_ps(vs[7].x, vs[6].x, vs[5].x, vs[4].x, vs[3].x, vs[2].x, vs[1].x, vs[0].x),
+        .y = _mm256_set_ps(vs[7].y, vs[6].y, vs[5].y, vs[4].y, vs[3].y, vs[2].y, vs[1].y, vs[0].y),
+        .z = _mm256_set_ps(vs[7].z, vs[6].z, vs[5].z, vs[4].z, vs[3].z, vs[2].z, vs[1].z, vs[0].z),
+    };
+}
+
+Vec3_8 Add_8(Vec3_8 v1, Vec3_8 v2)
+{
+    return Vec3_8 {
+        .x = _mm256_add_ps(v1.x, v2.x),
+        .y = _mm256_add_ps(v1.y, v2.y),
+        .z = _mm256_add_ps(v1.z, v2.z),
+    };
+}
+
+Vec3_8 Subtract_8(Vec3_8 v1, Vec3_8 v2)
+{
+    return Vec3_8 {
+        .x = _mm256_sub_ps(v1.x, v2.x),
+        .y = _mm256_sub_ps(v1.y, v2.y),
+        .z = _mm256_sub_ps(v1.z, v2.z),
+    };
+}
+
+Vec3_8 Multiply_8(Vec3_8 v, __m256 s)
+{
+    return Vec3_8 {
+        .x = _mm256_mul_ps(v.x, s),
+        .y = _mm256_mul_ps(v.y, s),
+        .z = _mm256_mul_ps(v.z, s),
+    };
+}
+
+Vec3_8 Multiply_8(Vec3_8 v1, Vec3_8 v2)
+{
+    return Vec3_8 {
+        .x = _mm256_mul_ps(v1.x, v2.x),
+        .y = _mm256_mul_ps(v1.y, v2.y),
+        .z = _mm256_mul_ps(v1.z, v2.z),
+    };
+}
+
+__m256 Dot_8(Vec3_8 v1, Vec3_8 v2)
+{
+    return _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(v1.x, v2.x), _mm256_mul_ps(v1.y, v2.y)),
+                         _mm256_mul_ps(v1.z, v2.z));
+}
+
+Vec3_8 Cross_8(Vec3_8 v1, Vec3_8 v2)
+{
+    return Vec3_8 {
+        .x = _mm256_sub_ps(_mm256_mul_ps(v1.y, v2.z), _mm256_mul_ps(v1.z, v2.y)),
+        .y = _mm256_sub_ps(_mm256_mul_ps(v1.z, v2.x), _mm256_mul_ps(v1.x, v2.z)),
+        .z = _mm256_sub_ps(_mm256_mul_ps(v1.x, v2.y), _mm256_mul_ps(v1.y, v2.x)),
+    };
+}
+
+Vec3_8 Inverse_8(Vec3_8 v)
+{
+    const __m256 one8 = _mm256_set1_ps(1.0f);
+    return Vec3_8 {
+        .x = _mm256_div_ps(one8, v.x),
+        .y = _mm256_div_ps(one8, v.y),
+        .z = _mm256_div_ps(one8, v.z),
+    };
+}
+
+Quat_8 Set1Quat_8(Quat q)
+{
+    return Quat_8 {
+        .x = _mm256_set1_ps(q.x),
+        .y = _mm256_set1_ps(q.y),
+        .z = _mm256_set1_ps(q.z),
+        .w = _mm256_set1_ps(q.w)
+    };
+}
+
+Quat_8 Multiply_8(Quat_8 q1, Quat_8 q2)
+{
+    return Quat_8 {
+        .x = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(q1.w, q2.x), _mm256_mul_ps(q1.x, q2.w)),
+                           _mm256_sub_ps(_mm256_mul_ps(q1.y, q2.z), _mm256_mul_ps(q1.z, q2.y))),
+        .y = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(q1.w, q2.y), _mm256_mul_ps(q1.y, q2.w)),
+                           _mm256_sub_ps(_mm256_mul_ps(q1.z, q2.x), _mm256_mul_ps(q1.x, q2.z))),
+        .z = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(q1.w, q2.z), _mm256_mul_ps(q1.z, q2.w)),
+                           _mm256_sub_ps(_mm256_mul_ps(q1.x, q2.y), _mm256_mul_ps(q1.y, q2.x))),
+        .w = _mm256_sub_ps(_mm256_sub_ps(_mm256_mul_ps(q1.w, q2.w), _mm256_mul_ps(q1.x, q2.x)),
+                           _mm256_add_ps(_mm256_mul_ps(q1.y, q2.y), _mm256_mul_ps(q1.z, q2.z))),
+    };
+}
+
+Quat_8 Inverse_8(Quat_8 q)
+{
+    const __m256 zero8 = _mm256_setzero_ps();
+    return Quat_8 {
+        .x = _mm256_sub_ps(zero8, q.x),
+        .y = _mm256_sub_ps(zero8, q.y),
+        .z = _mm256_sub_ps(zero8, q.z),
+        .w = q.w
+    };
+}
+
+Vec3_8 Multiply_8(Quat_8 q, Vec3_8 v)
+{
+    const __m256 zero8 = _mm256_setzero_ps();
+    Quat_8 vQuat = { v.x, v.y, v.z, zero8 };
+    Quat_8 qv = Multiply_8(q, vQuat);
+
+    Quat_8 qInv = Inverse_8(q);
+    Quat_8 qvqInv = Multiply_8(qv, qInv);
+
+    return Vec3_8 { qvqInv.x, qvqInv.y, qvqInv.z };
+}
+
+__m256 RayAxisAlignedBoxIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDirInv8, Vec3 boxMin, Vec3 boxMax)
+{
+    const Vec3_8 boxMin8 = Set1Vec3_8(boxMin);
+    const Vec3_8 boxMax8 = Set1Vec3_8(boxMax);
+
+    __m256 tMin = _mm256_set1_ps(-INFINITY);
+    __m256 tMax = _mm256_set1_ps(INFINITY);
+
+    const __m256 tX1 = _mm256_mul_ps(_mm256_sub_ps(boxMin8.x, rayOrigin8.x), rayDirInv8.x);
+    const __m256 tX2 = _mm256_mul_ps(_mm256_sub_ps(boxMax8.x, rayOrigin8.x), rayDirInv8.x);
+    tMin = _mm256_max_ps(tMin, _mm256_min_ps(tX1, tX2));
+    tMax = _mm256_min_ps(tMax, _mm256_max_ps(tX1, tX2));
+
+    const __m256 tY1 = _mm256_mul_ps(_mm256_sub_ps(boxMin8.y, rayOrigin8.y), rayDirInv8.y);
+    const __m256 tY2 = _mm256_mul_ps(_mm256_sub_ps(boxMax8.y, rayOrigin8.y), rayDirInv8.y);
+    tMin = _mm256_max_ps(tMin, _mm256_min_ps(tY1, tY2));
+    tMax = _mm256_min_ps(tMax, _mm256_max_ps(tY1, tY2));
+
+    const __m256 tZ1 = _mm256_mul_ps(_mm256_sub_ps(boxMin8.z, rayOrigin8.z), rayDirInv8.z);
+    const __m256 tZ2 = _mm256_mul_ps(_mm256_sub_ps(boxMax8.z, rayOrigin8.z), rayDirInv8.z);
+    tMin = _mm256_max_ps(tMin, _mm256_min_ps(tZ1, tZ2));
+    tMax = _mm256_min_ps(tMax, _mm256_max_ps(tZ1, tZ2));
+
+    // NOTE: doing an ordered (O) and non-signaling (Q) compare for greater than or equals here
+    // This means that if there's a NaN value, the comparison will return false, but no exception will be triggered
+    __m256 result = _mm256_cmp_ps(tMax, tMin, _CMP_GE_OQ);
+    return result;
+}
+
+__m256 RayTriangleIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDir8, Vec3 a, Vec3 b, Vec3 c, __m256* t8)
+{
+    const __m256 zero8 = _mm256_setzero_ps();
+    const __m256 one8 = _mm256_set1_ps(1.0f);
+    const float32 EPSILON = 0.000001f;
+    const __m256 EPSILON8 = _mm256_set1_ps(EPSILON);
+    const __m256 NEG_EPSILON8 = _mm256_set1_ps(-EPSILON);
+
+    const Vec3_8 a8 = Set1Vec3_8(a);
+    const Vec3_8 b8 = Set1Vec3_8(b);
+    const Vec3_8 c8 = Set1Vec3_8(c);
+
+    const Vec3_8 ab8 = Subtract_8(b8, a8);
+    const Vec3_8 ac8 = Subtract_8(c8, a8);
+    const Vec3_8 h8 = Cross_8(rayDir8, ac8);
+    const __m256 x8 = Dot_8(ab8, h8);
+    // Mask will be zeroed when NOT -epsilon <= x <= epsilon
+    const __m256 nonParallelMask1 = _mm256_cmp_ps(NEG_EPSILON8, x8, _CMP_LE_OQ);
+    const __m256 nonParallelMask2 = _mm256_cmp_ps(x8, EPSILON8, _CMP_LE_OQ);
+
+    const __m256 f8 = _mm256_div_ps(one8, x8);
+    const Vec3_8 s8 = Subtract_8(rayOrigin8, a8);
+    const __m256 u8 = _mm256_mul_ps(f8, Dot_8(s8, h8));
+    // Mask will be zeroed when NOT 0.0f <= u <= 1.0f
+    const __m256 insideUMask1 = _mm256_cmp_ps(zero8, u8, _CMP_LE_OQ);
+    const __m256 insideUMask2 = _mm256_cmp_ps(u8, one8, _CMP_LE_OQ);
+
+    const Vec3_8 q8 = Cross_8(s8, ab8);
+    const __m256 v8 = _mm256_mul_ps(f8, Dot_8(rayDir8, q8));
+    // Mask will be zeroed when NOT 0.0f <= v && u + v <= 1.0f
+    const __m256 insideVMask1 = _mm256_cmp_ps(zero8, v8, _CMP_LE_OQ);
+    const __m256 insideVMask2 = _mm256_cmp_ps(_mm256_add_ps(u8, v8), one8, _CMP_LE_OQ);
+
+    *t8 = _mm256_mul_ps(f8, Dot_8(ac8, q8));
+    // NOTE if a is 0, intersection is a line (I think)
+    // return true;
+    return zero8;
+}
+
+// -------------------------------------------------------------------------------------
 
 struct DebugTimer
 {
@@ -218,9 +425,47 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
+    const __m256 zero8 = _mm256_setzero_ps();
+    const Vec3_8 pos8 = Set1Vec3_8(pos);
+    const Quat_8 xToNormalRot8 = Set1Quat_8(xToNormalRot);
+    const __m256 offset8 = _mm256_set1_ps(0.001f);
+
+    static_assert(SAMPLES_PER_GROUP == 8);
     Vec3 outputColor = ambient;
     for (uint32 m = 0; m < sampleGroups.size; m++) {
-        // TODO hit this with some spicy AVX, 8 samples at a time
+#if ENABLE_AVX
+        // New AVX path
+        Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
+        Vec3_8 sampleNormal8 = Multiply_8(xToNormalRot8, sample8);
+        Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
+        Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
+
+        __m256 closestIntersectDist8 = _mm256_set1_ps(1e8);
+        for (uint32 i = 0; i < geometry.meshes.size; i++) {
+#if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
+            if (i != MODEL_TO_OCCLUDE) continue;
+#endif
+            const RaycastMesh& mesh = geometry.meshes[i];
+            // TODO also return min distance, and compare with closestIntersectDist8 ?
+            __m256 intersect8 = RayAxisAlignedBoxIntersection_8(originOffset8, sampleNormalInv8, mesh.min, mesh.max);
+            const int allZero = _mm256_testc_ps(zero8, intersect8);
+            if (allZero) {
+                continue;
+            }
+
+            for (uint32 j = 0; j < mesh.triangles.size; j++) {
+                const RaycastTriangle& triangle = mesh.triangles[j];
+                Vec3_8 triangleNormal8 = Set1Vec3_8(triangle.normal);
+                __m256 dot = Dot_8(sampleNormal8, triangleNormal8);
+
+                __m256 t8;
+                __m256 tIntersect8 = RayTriangleIntersection_8(originOffset8, sampleNormal8,
+                                                               triangle.pos[0], triangle.pos[1], triangle.pos[2], &t8);
+
+            }
+        }
+#else
+        // Old, non-AVX path
         for (uint32 n = 0; n < SAMPLES_PER_GROUP; n++) {
             const Vec3 sampleNormal = xToNormalRot * sampleGroups[m].group[n];
             const Vec3 sampleNormalInv = {
@@ -234,11 +479,11 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
             float32 closestIntersectDist = 1e8;
             const RaycastTriangle* closestTriangle = nullptr;
-            for (uint32 j = 0; j < geometry.meshes.size; j++) {
+            for (uint32 i = 0; i < geometry.meshes.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
-                if (j != MODEL_TO_OCCLUDE) continue;
+                if (i != MODEL_TO_OCCLUDE) continue;
 #endif
-                const RaycastMesh& mesh = geometry.meshes[j];
+                const RaycastMesh& mesh = geometry.meshes[i];
                 float32 tAABB;
                 if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max, &tAABB)) {
                     continue;
@@ -248,8 +493,8 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
                     continue;
                 }
 
-                for (uint32 k = 0; k < geometry.meshes[j].triangles.size; k++) {
-                    const RaycastTriangle& triangle = geometry.meshes[j].triangles[k];
+                for (uint32 j = 0; j < mesh.triangles.size; j++) {
+                    const RaycastTriangle& triangle = mesh.triangles[j];
                     float32 dot = Dot(sampleNormal, triangle.normal);
                     if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
 
@@ -289,6 +534,7 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
                 }
             }
         }
+#endif
     }
 
     outputColor.r = ClampFloat32(outputColor.r, 0.0f, 1.0f);
@@ -362,7 +608,6 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
 #if RESTRICT_LIGHTING && RESTRICT_WALL
         if (i / 2 != PLANE_TO_LIGHT) continue;
 #endif
-
         const RaycastTriangle& triangle = mesh.triangles[i];
         const Vec2 minUv = {
             MinFloat32(triangle.uvs[0].x, MinFloat32(triangle.uvs[1].x, triangle.uvs[2].x)),
@@ -426,7 +671,7 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
             work->pixelY = y;
             work->triangle = triangle;
             if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
-                LOG_INFO("flush queue. model %lu, triangle %lu/%lu, row [%d, %d, %d)\n",
+                LOG_INFO("flush queue. mesh %lu, triangle %lu/%lu, row [%d, %d, %d)\n",
                          meshInd, i + 1, mesh.triangles.size, minPixelY, y, maxPixelY);
                 CompleteAllWork(queue);
                 DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
@@ -484,7 +729,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
     for (uint32 i = 0; i < geometry.meshes.size; i++)
 #endif
     {
-        LOG_INFO("Lighting model %lu\n", i);
+        LOG_INFO("Lighting mesh %lu\n", i);
         ALLOCATOR_SCOPE_RESET(*allocator);
 
         float32 surfaceArea = 0.0f;
