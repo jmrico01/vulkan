@@ -76,9 +76,9 @@ int main(int argc, char* argv[])
         GetSystemInfo(&systemInfo);
         int numThreads = systemInfo.dwNumberOfProcessors - 1;
         if (numThreads > MAX_THREADS) {
-            LOG_ERROR("Whoa, hello future! This machine has too many processors: %d\n", systemInfo.dwNumberOfProcessors);
-            LOG_FLUSH();
-            return 1;
+            LOG_INFO("Whoa, hello future! This machine has too many processors: %d, clamping to %d\n",
+                     systemInfo.dwNumberOfProcessors, MAX_THREADS);
+            numThreads = MAX_THREADS;
         }
         for (int i = 0; i < numThreads; i++) {
             HANDLE* handle = threadHandles.Append();

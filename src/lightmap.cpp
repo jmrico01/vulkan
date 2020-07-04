@@ -18,7 +18,7 @@ const int MODELS_TO_LIGHT[] = {
     7
 };
 
-#define RESTRICT_OCCLUSION 0
+#define RESTRICT_OCCLUSION 1
 #define MODEL_TO_OCCLUDE 3
 
 #define RESTRICT_WALL 3
@@ -105,21 +105,19 @@ float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
     return -Dot(dir1, dir2);
 }
 
-float32 HemisphereGroupCloseness(const Array<Vec3>& samples, const StaticArray<int, 8>& groupInds)
+float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[8])
 {
     float32 closeness = 0.0f;
     for (uint32 i = 0; i < 8; i++) {
         for (uint32 j = i + 1; j < 8; j++) {
-            closeness += HemisphereDirCloseness(samples[groupInds[i]], samples[groupInds[j]]);
+            closeness += HemisphereDirCloseness(samples[groupIndices[i]], samples[groupIndices[j]]);
         }
     }
     return closeness;
 }
 
-void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
+void GenerateHemisphereSamples(Array<Vec3> samples)
 {
-    ALLOCATOR_SCOPE_RESET(*allocator);
-
     for (uint32 i = 0; i < samples.size; i++) {
         Vec3 dir;
         do {
@@ -130,38 +128,45 @@ void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
 
         samples[i] = Normalize(dir);
     }
+}
+
+void GenerateHemisphereSamples(Array<Vec3> samples, LinearAllocator* allocator)
+{
+    ALLOCATOR_SCOPE_RESET(*allocator);
+
+    GenerateHemisphereSamples(samples);
 
     DEBUG_ASSERT(samples.size % 8 == 0);
     const uint32 numGroups = samples.size / 8;
-    StaticArray<int, 8>* groupIndices = allocator->New<StaticArray<int, 8>>(numGroups);
-    for (uint32 i = 0; i < numGroups; i++) {
-        for (uint32 j = 0; j < 8; j++) {
-            groupIndices[i][j] = i * 8 + j;
-        }
+
+    Array<int> indices = allocator->NewArray<int>(samples.size);
+    for (uint32 i = 0; i < samples.size; i++) {
+        indices[i] = i;
     }
 
     const unsigned int seed = (unsigned int)time(NULL);
     srand(seed);
 
     const uint32 ITERATIONS = 10000;
-    uint32 minIteration = 0;
+
+    Array<int> minIndices = allocator->NewArray<int>(samples.size);
     float32 minCloseness = 1e8;
     for (uint32 n = 0; n < ITERATIONS; n++) {
-        samples.Shuffle();
+        indices.Shuffle();
         float32 totalCloseness = 0.0f;
         for (uint32 i = 0; i < numGroups; i++) {
-            totalCloseness += HemisphereGroupCloseness(samples, groupIndices[i]);
+            totalCloseness += HemisphereGroupCloseness(samples, &indices[i * 8]);
         }
         if (totalCloseness < minCloseness) {
-            minIteration = n;
+            minIndices.CopyFrom(indices);
             minCloseness = totalCloseness;
         }
     }
 
-    // TODO Replicating the whole series of shuffles. Could be done by a more standardized PRNG
-    srand(seed);
-    for (uint32 n = 0; n <= minIteration; n++) {
-        samples.Shuffle();
+    Array<Vec3> samplesCopy = allocator->NewArray<Vec3>(samples.size);
+    samplesCopy.CopyFrom(samples);
+    for (uint32 i = 0; i < samples.size; i++) {
+        samples[i] = samplesCopy[minIndices[i]];
     }
 }
 
@@ -186,7 +191,7 @@ internal Vec3 RaycastColor(Array<Vec3> samples, Vec3 pos, Vec3 normal, const Ray
         },
     };
 
-    // NOTE this will do undefined things with "up" direction
+    // NOTE this will do unknown-ish things with "up" direction
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
