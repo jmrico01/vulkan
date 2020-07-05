@@ -476,7 +476,7 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
         Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
         Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
 
-        __m256i closestMeshInd8 = _mm256_undefined_si256();
+        __m256i closestMeshInd8 = _mm256_set1_epi32(geometry.meshes.size);
         __m256i closestTriangleInd8 = _mm256_undefined_si256();
         __m256 closestIntersectDist8 = largeFloat8;
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
