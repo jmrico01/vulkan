@@ -12,9 +12,9 @@
 // 6 - some other rock
 // 7 - walls
 
-#define RESTRICT_LIGHTING 1
+#define RESTRICT_LIGHTING 0
 const int MODELS_TO_LIGHT[] = {
-    7
+    3
 };
 
 #define RESTRICT_OCCLUSION 0
@@ -549,19 +549,22 @@ struct WorkLightmapRasterizeRowCommon
     Array<SampleGroup> hemisphereSampleGroups;
     const RaycastGeometry* geometry;
     uint32* pixels;
+    uint32 meshInd;
 };
 
 struct WorkLightmapRasterizeRow
 {
     const WorkLightmapRasterizeRowCommon* common;
+    uint32 triangleInd;
     int minPixelX, maxPixelX, pixelY;
-    RaycastTriangle triangle;
 };
 
-void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixelY, const RaycastTriangle& triangle,
+void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixelY, uint32 meshInd, uint32 triangleInd,
                           Array<SampleGroup> hemisphereSampleGroups, const RaycastGeometry& geometry, uint32* pixels)
 {
+    const RaycastTriangle& triangle = geometry.meshes[meshInd].triangles[triangleInd];
     const float32 uvY = (float32)pixelY / squareSize;
+
     for (int x = minPixelX; x < maxPixelX; x++) {
         const float32 uvX = (float32)x / squareSize;
         const Vec3 bC = BarycentricCoordinates(Vec2 { uvX, uvY }, triangle.uvs[0], triangle.uvs[1], triangle.uvs[2]);
@@ -576,12 +579,22 @@ void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixe
     }
 }
 
-void ThreadLightmapRasterizeRow(void* data)
+void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
 {
     WorkLightmapRasterizeRow* workData = (WorkLightmapRasterizeRow*)data;
+
+    const uint32 remaining = queue->entriesTotal - queue->entriesComplete;
+    if (remaining % 100 == 0) {
+        const RaycastGeometry& geometry = *workData->common->geometry;
+        const int32 meshInd = workData->common->meshInd;
+        LOG_INFO("%d rows in queue | processing mesh %lu, triangle %lu/%lu, row %d (%d pixels)\n",
+                 remaining, meshInd, workData->triangleInd, geometry.meshes[meshInd].triangles.size, workData->pixelY,
+                 workData->maxPixelX - workData->minPixelX);
+    }
+
     LightmapRasterizeRow(workData->common->squareSize, workData->minPixelX, workData->maxPixelX, workData->pixelY,
-                         workData->triangle, workData->common->hemisphereSampleGroups, *workData->common->geometry,
-                         workData->common->pixels);
+                         workData->common->meshInd, workData->triangleInd, workData->common->hemisphereSampleGroups,
+                         *workData->common->geometry, workData->common->pixels);
 }
 
 internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
@@ -599,7 +612,8 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
         .squareSize = squareSize,
         .hemisphereSampleGroups = hemisphereSampleGroupsArray,
         .geometry = &geometry,
-        .pixels = pixels
+        .pixels = pixels,
+        .meshInd = meshInd
     };
     auto allocatorState = allocator->SaveState();
 
@@ -666,13 +680,11 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
                 DEBUG_ASSERT(work != nullptr);
             }
             work->common = &workCommon;
+            work->triangleInd = i;
             work->minPixelX = minPixelX;
             work->maxPixelX = maxPixelX;
             work->pixelY = y;
-            work->triangle = triangle;
             if (!TryAddWork(queue, ThreadLightmapRasterizeRow, work)) {
-                LOG_INFO("flush queue. mesh %lu, triangle %lu/%lu, row [%d, %d, %d)\n",
-                         meshInd, i + 1, mesh.triangles.size, minPixelY, y, maxPixelY);
                 CompleteAllWork(queue);
                 DEBUG_ASSERT(TryAddWork(queue, ThreadLightmapRasterizeRow, work));
             }

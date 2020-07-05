@@ -14,7 +14,9 @@ struct AppMemory
     LargeArray<uint8> transient;
 };
 
-#define APP_WORK_QUEUE_CALLBACK_FUNCTION(name) void name(void* data);
+struct AppWorkQueue;
+
+#define APP_WORK_QUEUE_CALLBACK_FUNCTION(name) void name(AppWorkQueue* queue, void* data)
 typedef APP_WORK_QUEUE_CALLBACK_FUNCTION(AppWorkQueueCallbackFunction);
 
 struct AppWorkEntry

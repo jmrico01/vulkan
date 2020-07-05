@@ -23,7 +23,7 @@ bool TryDoNextWorkEntry(AppWorkQueue* queue)
     const uint32 index = InterlockedCompareExchange((LONG volatile *)&queue->read, newRead, read);
     if (index == read) {
         AppWorkEntry entry = queue->entries[index];
-        entry.callback(entry.data);
+        entry.callback(queue, entry.data);
         InterlockedIncrement((LONG volatile*)&queue->entriesComplete);
     }
 

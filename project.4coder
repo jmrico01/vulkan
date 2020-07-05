@@ -52,7 +52,7 @@ command_list = {
 },
 {
 	.name = "run-ifchanged",
-	.out = "*run*", .footer_panel = true, .save_dirty_files = false, .cursor_at_end = false,
+	.out = "*run*", .footer_panel = true, .save_dirty_files = false, .cursor_at_end = true,
 	.cmd = {
 		{"python ./libs/internal/km_compile/compile.py debug --ifchanged && python ./libs/internal/km_compile/compile.py run", .os = "win"},
 	},
