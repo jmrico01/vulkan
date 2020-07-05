@@ -359,7 +359,7 @@ internal float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupI
     return closeness;
 }
 
-internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, LinearAllocator* allocator)
+internal bool GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, LinearAllocator* allocator)
 {
     ALLOCATOR_SCOPE_RESET(*allocator);
 
@@ -373,6 +373,9 @@ internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, Li
     const uint32 numGroups = samples.size / 8;
 
     Array<int> indices = allocator->NewArray<int>(samples.size);
+    if (indices.data == nullptr) {
+        return false;
+    }
     for (uint32 i = 0; i < samples.size; i++) {
         indices[i] = i;
     }
@@ -382,6 +385,9 @@ internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, Li
 
     const uint32 ITERATIONS = 10000;
     Array<int> minIndices = allocator->NewArray<int>(samples.size);
+    if (minIndices.data == nullptr) {
+        return false;
+    }
     float32 minCloseness = 1e8;
     for (uint32 n = 0; n < ITERATIONS; n++) {
         indices.Shuffle();
@@ -396,11 +402,15 @@ internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, Li
     }
 
     Array<Vec3> samplesCopy = allocator->NewArray<Vec3>(samples.size);
+    if (samplesCopy.data == nullptr) {
+        return false;
+    }
     samplesCopy.CopyFrom(samples);
     for (uint32 i = 0; i < samples.size; i++) {
         samples[i] = samplesCopy[minIndices[i]];
     }
 
+    // Debug purposes only, log closeness
     for (uint32 i = 0; i < samples.size; i++) {
         indices[i] = i;
     }
@@ -409,6 +419,8 @@ internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, Li
         totalCloseness += HemisphereGroupCloseness(samples, &indices[i * 8]);
     }
     LOG_INFO("hemisphere closeness: %f\n", totalCloseness);
+
+    return true;
 }
 
 internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 normal, const RaycastGeometry& geometry)
@@ -421,14 +433,14 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             .width = { -2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 1.0f, 0.0f, 0.0f },
-            .intensity = 2.0f
+            .intensity = 1.0f
         },
         {
             .origin = { 2.0f, -1.544835f + 0.005f, 2.24f },
             .width = { 2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 0.0f, 0.0f, 1.0f },
-            .intensity = 2.0f
+            .intensity = 1.0f
         },
     };
 
@@ -567,6 +579,7 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             else if ((uint32)meshInds[i] != geometry.meshes.size) {
                 const RaycastMesh& mesh = geometry.meshes[meshInds[i]];
                 const Lightmap& lightmap = mesh.lightmap;
+                const int squareSize = lightmap.squareSize;
                 const RaycastTriangle& triangle = mesh.triangles[triangleInds[i]];
                 const Vec3 sampleNormal = xToNormalRot * sampleGroups[m].group[i];
                 const Vec3 originOffset = pos + sampleNormal * offset;
@@ -575,17 +588,20 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
                 const bool result = BarycentricCoordinates(originOffset, sampleNormal,
                                                            triangle.pos[0], triangle.pos[1], triangle.pos[2], &b);
                 const Vec2 uv = triangle.uvs[0] * b.x + triangle.uvs[1] * b.y + triangle.uvs[2] * b.z;
-                const Vec2Int pixel = { (int)(uv.x * lightmap.squareSize), (int)(uv.y * lightmap.squareSize) };
-                const uint32 pixelValue = lightmap.pixels[pixel.y * lightmap.squareSize + pixel.x];
-                uint32 pixelR = pixelValue & 0xff;
-                uint32 pixelG = (pixelValue >> 8) & 0xff;
-                uint32 pixelB = (pixelValue >> 16) & 0xff;
-                const Vec3 pixelColor = {
-                    (float32)pixelR / 255.0f,
-                    (float32)pixelG / 255.0f,
-                    (float32)pixelB / 255.0f
-                };
-                outputColor += sampleContribution * pixelColor;
+                const Vec2Int pixel = { (int)(uv.x * squareSize), (int)(uv.y * squareSize) };
+                if (0 <= pixel.x && pixel.x < squareSize && 0 <= pixel.y && pixel.y < squareSize) {
+                    const uint32 pixelValue = lightmap.pixels[pixel.y * squareSize + pixel.x];
+                    uint32 pixelR = pixelValue & 0xff;
+                    uint32 pixelG = (pixelValue >> 8) & 0xff;
+                    uint32 pixelB = (pixelValue >> 16) & 0xff;
+                    const Vec3 pixelColor = {
+                        (float32)pixelR / 255.0f,
+                        (float32)pixelG / 255.0f,
+                        (float32)pixelB / 255.0f
+                    };
+                    // TODO adjust color based on material properties, e.g. material should absorb some light
+                    outputColor += sampleContribution * pixelColor;
+                }
             }
         }
     }
@@ -651,17 +667,23 @@ void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
                          workData->common->hemisphereSampleGroups, workData->common->lightmap);
 }
 
-internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
+internal bool CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
                                        LinearAllocator* allocator, Lightmap* lightmap)
 {
     const int LIGHTMAP_PIXEL_MARGIN = 1;
 
-    StaticArray<SampleGroup, NUM_HEMISPHERE_SAMPLE_GROUPS> hemisphereSampleGroups;
-    Array<SampleGroup> hemisphereSampleGroupsArray = hemisphereSampleGroups.ToArray();
-    GenerateHemisphereSampleGroups(hemisphereSampleGroupsArray, allocator);
+    Array<SampleGroup> hemisphereSampleGroups = allocator->NewArray<SampleGroup>(NUM_HEMISPHERE_SAMPLE_GROUPS);
+    if (hemisphereSampleGroups.data == nullptr) {
+        LOG_ERROR("Failed to allocate hemisphere sample groups\n");
+        return false;
+    }
+    if (!GenerateHemisphereSampleGroups(hemisphereSampleGroups, allocator)) {
+        LOG_ERROR("Failed to generate hemisphere sample groups\n");
+        return false;
+    }
 
     const WorkLightmapRasterizeRowCommon workCommon = {
-        .hemisphereSampleGroups = hemisphereSampleGroupsArray,
+        .hemisphereSampleGroups = hemisphereSampleGroups,
         .geometry = &geometry,
         .meshInd = meshInd,
         .lightmap = lightmap
@@ -730,7 +752,10 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
                 CompleteAllWork(queue);
                 allocator->LoadState(allocatorState);
                 work = allocator->New<WorkLightmapRasterizeRow>();
-                DEBUG_ASSERT(work != nullptr);
+                if (work == nullptr) {
+                    LOG_ERROR("Failed to allocate work entry after allocator flush\n");
+                    return false;
+                }
             }
             work->common = &workCommon;
             work->triangleInd = i;
@@ -745,6 +770,8 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
     }
 
     CompleteAllWork(queue);
+
+    return true;
 }
 
 bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* queue, LinearAllocator* allocator,
@@ -752,11 +779,19 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
 {
     RaycastGeometry geometry;
     geometry.meshes = allocator->NewArray<RaycastMesh>(obj.models.size);
+    if (geometry.meshes.data == nullptr) {
+        LOG_ERROR("Failed to allocate geometry meshes\n");
+        return false;
+    }
 
     uint32 totalTriangles = 0;
     for (uint32 i = 0; i < obj.models.size; i++) {
         RaycastMesh& mesh = geometry.meshes[i];
         mesh.triangles = allocator->NewArray<RaycastTriangle>(obj.models[i].triangles.size);
+        if (mesh.triangles.data == nullptr) {
+            LOG_ERROR("Failed to allocate geometry mesh triangles for mesh %lu\n", i);
+            return false;
+        }
 
         // Copy triangle geometry data
         float32 surfaceArea = 0.0f;
@@ -816,10 +851,19 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
         ALLOCATOR_SCOPE_RESET(*allocator);
 
         Array<Lightmap> lightmaps = allocator->NewArray<Lightmap>(geometry.meshes.size);
+        if (lightmaps.data == nullptr) {
+            LOG_ERROR("Failed to allocate lightmaps array in bounce %lu\n", b);
+            return false;
+        }
+
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
             const uint32 squareSize = geometry.meshes[i].lightmap.squareSize;
             lightmaps[i].squareSize = squareSize,
             lightmaps[i].pixels = allocator->New<uint32>(squareSize * squareSize);
+            if (lightmaps[i].pixels == nullptr) {
+                LOG_ERROR("Failed to allocate pixels for lightmap, bounce %lu, mesh %lu\n", b, i);
+                return false;
+            }
             MemSet(lightmaps[i].pixels, 0, squareSize * squareSize * sizeof(uint32));
         }
 
