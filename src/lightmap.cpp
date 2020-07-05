@@ -12,8 +12,6 @@
 // 6 - some other rock
 // 7 - walls
 
-#define ENABLE_AVX 0
-
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
     7
@@ -29,8 +27,8 @@ const uint64 PLANE_RIGHT = 2;
 const uint64 PLANE_FLOOR = 3;
 #define PLANE_TO_LIGHT PLANE_FLOOR
 
-const float32 RESOLUTION_PER_WORLD_UNIT = 256.0f;
-const uint32 NUM_HEMISPHERE_SAMPLES = 256;
+const float32 RESOLUTION_PER_WORLD_UNIT = 64.0f;
+const uint32 NUM_HEMISPHERE_SAMPLES = 64;
 const uint32 SAMPLES_PER_GROUP = 8;
 static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
 const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
@@ -97,6 +95,31 @@ Vec3_8 Multiply_8(Vec3_8 v1, Vec3_8 v2)
     };
 }
 
+Vec3_8 Divide_8(Vec3_8 v, __m256 s)
+{
+    const __m256 sInv = _mm256_rcp_ps(s);
+    return Vec3_8 {
+        .x = _mm256_mul_ps(v.x, sInv),
+        .y = _mm256_mul_ps(v.y, sInv),
+        .z = _mm256_mul_ps(v.z, sInv),
+    };
+}
+
+__m256 MagSq_8(Vec3_8 v)
+{
+    return _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(v.x, v.x), _mm256_mul_ps(v.y, v.y)), _mm256_mul_ps(v.z, v.z));
+}
+__m256 Mag_8(Vec3_8 v)
+{
+    return _mm256_sqrt_ps(MagSq_8(v));
+}
+
+Vec3_8 Normalize_8(Vec3_8 v)
+{
+    const __m256 mag = Mag_8(v);
+    return Divide_8(v, mag);
+}
+
 __m256 Dot_8(Vec3_8 v1, Vec3_8 v2)
 {
     return _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(v1.x, v2.x), _mm256_mul_ps(v1.y, v2.y)),
@@ -114,11 +137,10 @@ Vec3_8 Cross_8(Vec3_8 v1, Vec3_8 v2)
 
 Vec3_8 Inverse_8(Vec3_8 v)
 {
-    const __m256 one8 = _mm256_set1_ps(1.0f);
     return Vec3_8 {
-        .x = _mm256_div_ps(one8, v.x),
-        .y = _mm256_div_ps(one8, v.y),
-        .z = _mm256_div_ps(one8, v.z),
+        .x = _mm256_rcp_ps(v.x),
+        .y = _mm256_rcp_ps(v.y),
+        .z = _mm256_rcp_ps(v.z),
     };
 }
 
@@ -169,6 +191,19 @@ Vec3_8 Multiply_8(Quat_8 q, Vec3_8 v)
     return Vec3_8 { qvqInv.x, qvqInv.y, qvqInv.z };
 }
 
+__m256 RayPlaneIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDir8, Vec3_8 planeOrigin8, Vec3_8 planeNormal8, __m256* t8)
+{
+    const __m256 zero8 = _mm256_setzero_ps();
+
+    const __m256 dotDirNormal8 = Dot_8(rayDir8, planeNormal8);
+    // Set mask when dot is non-zero (otherwise, ray direction is perpendicular to plane normal, so no intersection)
+    const __m256 result8 = _mm256_cmp_ps(dotDirNormal8, zero8, _CMP_NEQ_OQ);
+
+    const __m256 invDotDirNormal8 = _mm256_rcp_ps(dotDirNormal8);
+    *t8 = _mm256_mul_ps(Dot_8(Subtract_8(planeOrigin8, rayOrigin8), planeNormal8), invDotDirNormal8);
+    return result8;
+}
+
 __m256 RayAxisAlignedBoxIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDirInv8, Vec3 boxMin, Vec3 boxMax)
 {
     const Vec3_8 boxMin8 = Set1Vec3_8(boxMin);
@@ -194,17 +229,17 @@ __m256 RayAxisAlignedBoxIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDirInv8, Vec
 
     // NOTE: doing an ordered (O) and non-signaling (Q) compare for greater than or equals here
     // This means that if there's a NaN value, the comparison will return false, but no exception will be triggered
-    __m256 result = _mm256_cmp_ps(tMax, tMin, _CMP_GE_OQ);
-    return result;
+    __m256 result8 = _mm256_cmp_ps(tMax, tMin, _CMP_GE_OQ);
+    return result8;
 }
 
 __m256 RayTriangleIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDir8, Vec3 a, Vec3 b, Vec3 c, __m256* t8)
 {
     const __m256 zero8 = _mm256_setzero_ps();
     const __m256 one8 = _mm256_set1_ps(1.0f);
-    const float32 EPSILON = 0.000001f;
-    const __m256 EPSILON8 = _mm256_set1_ps(EPSILON);
-    const __m256 NEG_EPSILON8 = _mm256_set1_ps(-EPSILON);
+    const float32 epsilon = 0.000001f;
+    const __m256 epsilon8 = _mm256_set1_ps(epsilon);
+    const __m256 negEpsilon8 = _mm256_set1_ps(-epsilon);
 
     const Vec3_8 a8 = Set1Vec3_8(a);
     const Vec3_8 b8 = Set1Vec3_8(b);
@@ -214,27 +249,27 @@ __m256 RayTriangleIntersection_8(Vec3_8 rayOrigin8, Vec3_8 rayDir8, Vec3 a, Vec3
     const Vec3_8 ac8 = Subtract_8(c8, a8);
     const Vec3_8 h8 = Cross_8(rayDir8, ac8);
     const __m256 x8 = Dot_8(ab8, h8);
-    // Mask will be zeroed when NOT -epsilon <= x <= epsilon
-    const __m256 nonParallelMask1 = _mm256_cmp_ps(NEG_EPSILON8, x8, _CMP_LE_OQ);
-    const __m256 nonParallelMask2 = _mm256_cmp_ps(x8, EPSILON8, _CMP_LE_OQ);
+    // Result mask is set when x < -EPSILON || x > EPSILON
+    __m256 result8 = _mm256_or_ps(_mm256_cmp_ps(x8, negEpsilon8, _CMP_LT_OQ), _mm256_cmp_ps(x8, epsilon8, _CMP_GT_OQ));
 
-    const __m256 f8 = _mm256_div_ps(one8, x8);
+    const __m256 f8 = _mm256_rcp_ps(x8);
     const Vec3_8 s8 = Subtract_8(rayOrigin8, a8);
     const __m256 u8 = _mm256_mul_ps(f8, Dot_8(s8, h8));
-    // Mask will be zeroed when NOT 0.0f <= u <= 1.0f
-    const __m256 insideUMask1 = _mm256_cmp_ps(zero8, u8, _CMP_LE_OQ);
-    const __m256 insideUMask2 = _mm256_cmp_ps(u8, one8, _CMP_LE_OQ);
+    // Result mask is set when 0.0f <= u <= 1.0f
+    result8 = _mm256_and_ps(result8, _mm256_cmp_ps(zero8, u8, _CMP_LE_OQ));
+    result8 = _mm256_and_ps(result8, _mm256_cmp_ps(u8, one8, _CMP_LE_OQ));
 
     const Vec3_8 q8 = Cross_8(s8, ab8);
     const __m256 v8 = _mm256_mul_ps(f8, Dot_8(rayDir8, q8));
-    // Mask will be zeroed when NOT 0.0f <= v && u + v <= 1.0f
-    const __m256 insideVMask1 = _mm256_cmp_ps(zero8, v8, _CMP_LE_OQ);
-    const __m256 insideVMask2 = _mm256_cmp_ps(_mm256_add_ps(u8, v8), one8, _CMP_LE_OQ);
+    // Result mask is set when 0.0f <= v && u + v <= 1.0f
+    result8 = _mm256_and_ps(result8, _mm256_cmp_ps(zero8, v8, _CMP_LE_OQ));
+    result8 = _mm256_and_ps(result8, _mm256_cmp_ps(_mm256_add_ps(u8, v8), one8, _CMP_LE_OQ));
 
     *t8 = _mm256_mul_ps(f8, Dot_8(ac8, q8));
-    // NOTE if a is 0, intersection is a line (I think)
-    // return true;
-    return zero8;
+    // Result mask is set when t8 >= 0.0f (otherwise, intersection point is behind the ray origin)
+    // NOTE if t is 0, intersection is a line (I think)
+    result8 = _mm256_and_ps(result8, _mm256_cmp_ps(*t8, zero8, _CMP_GE_OQ));
+    return result8;
 }
 
 // -------------------------------------------------------------------------------------
@@ -425,6 +460,8 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
     const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
+    const float32 largeFloat = 1e8;
+    const __m256 largeFloat8 = _mm256_set1_ps(largeFloat);
     const __m256 zero8 = _mm256_setzero_ps();
     const Vec3_8 pos8 = Set1Vec3_8(pos);
     const Quat_8 xToNormalRot8 = Set1Quat_8(xToNormalRot);
@@ -433,14 +470,12 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
     static_assert(SAMPLES_PER_GROUP == 8);
     Vec3 outputColor = ambient;
     for (uint32 m = 0; m < sampleGroups.size; m++) {
-#if ENABLE_AVX
-        // New AVX path
         Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
         Vec3_8 sampleNormal8 = Multiply_8(xToNormalRot8, sample8);
         Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
         Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
 
-        __m256 closestIntersectDist8 = _mm256_set1_ps(1e8);
+        __m256 closestIntersectDist8 = largeFloat8;
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
             if (i != MODEL_TO_OCCLUDE) continue;
@@ -455,86 +490,51 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
             for (uint32 j = 0; j < mesh.triangles.size; j++) {
                 const RaycastTriangle& triangle = mesh.triangles[j];
-                Vec3_8 triangleNormal8 = Set1Vec3_8(triangle.normal);
-                __m256 dot = Dot_8(sampleNormal8, triangleNormal8);
-
                 __m256 t8;
                 __m256 tIntersect8 = RayTriangleIntersection_8(originOffset8, sampleNormal8,
                                                                triangle.pos[0], triangle.pos[1], triangle.pos[2], &t8);
-
+                t8 = _mm256_blendv_ps(largeFloat8, t8, tIntersect8);
+                closestIntersectDist8 = _mm256_min_ps(closestIntersectDist8, t8);
             }
         }
-#else
-        // Old, non-AVX path
-        for (uint32 n = 0; n < SAMPLES_PER_GROUP; n++) {
-            const Vec3 sampleNormal = xToNormalRot * sampleGroups[m].group[n];
-            const Vec3 sampleNormalInv = {
-                1.0f / sampleNormal.x,
-                1.0f / sampleNormal.y,
-                1.0f / sampleNormal.z
-            };
 
-            const float32 offset = 0.001f;
-            const Vec3 originOffset = pos + sampleNormal * offset;
+        for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
+            const Vec3_8 lightRectOrigin8 = Set1Vec3_8(LIGHT_RECTS[l].origin);
+            const Vec3_8 lightRectNormal8 = Set1Vec3_8(Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height)));
 
-            float32 closestIntersectDist = 1e8;
-            const RaycastTriangle* closestTriangle = nullptr;
-            for (uint32 i = 0; i < geometry.meshes.size; i++) {
-#if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
-                if (i != MODEL_TO_OCCLUDE) continue;
-#endif
-                const RaycastMesh& mesh = geometry.meshes[i];
-                float32 tAABB;
-                if (!RayAxisAlignedBoxIntersection(originOffset, sampleNormalInv, mesh.min, mesh.max, &tAABB)) {
-                    continue;
-                }
-                // TODO slightly untested... does this actually work?
-                if (tAABB > closestIntersectDist) {
-                    continue;
-                }
+            const Vec3_8 lightWidth8 = Set1Vec3_8(LIGHT_RECTS[l].width);
+            const Vec3_8 lightHeight8 = Set1Vec3_8(LIGHT_RECTS[l].height);
+            const __m256 lightRectWidth8 = Mag_8(lightWidth8);
+            const Vec3_8 lightRectUnitWidth8 = Divide_8(lightWidth8, lightRectWidth8);
+            const __m256 lightRectHeight8 = Mag_8(lightHeight8);
+            const Vec3_8 lightRectUnitHeight8 = Divide_8(lightHeight8, lightRectHeight8);
 
-                for (uint32 j = 0; j < mesh.triangles.size; j++) {
-                    const RaycastTriangle& triangle = mesh.triangles[j];
-                    float32 dot = Dot(sampleNormal, triangle.normal);
-                    if (dot > 0.0f) continue; // Triangle facing in the same direction as normal (away from ray)
+            __m256 t8;
+            __m256 pIntersect8 = RayPlaneIntersection_8(pos8, sampleNormal8, lightRectOrigin8, lightRectNormal8, &t8);
 
-                    float32 t;
-                    if (RayTriangleIntersection(originOffset, sampleNormal,
-                                                triangle.pos[0], triangle.pos[1], triangle.pos[2], &t)) {
-                        if (t > 0.0f && t < closestIntersectDist) {
-                            closestIntersectDist = t;
-                            closestTriangle = &triangle;
-                        }
-                    }
-                }
-            }
+            // Pixels are lit only when 0.0f <= t < closestIntersectDist
+            __m256 lit8 = _mm256_and_ps(pIntersect8, _mm256_cmp_ps(zero8, t8, _CMP_LE_OQ));
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(t8, closestIntersectDist8, _CMP_LT_OQ));
 
-            for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
-                const Vec3 lightRectNormal = Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height));
-                const float32 lightRectWidth = Mag(LIGHT_RECTS[l].width);
-                const Vec3 lightRectUnitWidth = LIGHT_RECTS[l].width / lightRectWidth;
-                const float32 lightRectHeight = Mag(LIGHT_RECTS[l].height);
-                const Vec3 lightRectUnitHeight = LIGHT_RECTS[l].height / lightRectHeight;
+            const Vec3_8 intersect8 = Add_8(pos8, Multiply_8(sampleNormal8, t8));
+            const Vec3_8 rectOriginToIntersect8 = Subtract_8(intersect8, lightRectOrigin8);
 
-                float32 t;
-                if (!RayPlaneIntersection(pos, sampleNormal, LIGHT_RECTS[l].origin, lightRectNormal, &t)) {
-                    continue;
-                }
-                if (t < 0.0f || t > closestIntersectDist) {
-                    continue;
-                }
+            const __m256 projWidth8 = Dot_8(rectOriginToIntersect8, lightRectUnitWidth8);
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(zero8, projWidth8, _CMP_LE_OQ));
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(projWidth8, lightRectWidth8, _CMP_LE_OQ));
 
-                const Vec3 intersect = pos + t * sampleNormal;
-                const Vec3 rectOriginToIntersect = intersect - LIGHT_RECTS[l].origin;
-                const float32 projWidth = Dot(rectOriginToIntersect, lightRectUnitWidth);
-                const float32 projHeight = Dot(rectOriginToIntersect, lightRectUnitHeight);
-                if (0.0f <= projWidth && projWidth <= lightRectWidth && 0.0f <= projHeight && projHeight <= lightRectHeight) {
+            const __m256 projHeight8 = Dot_8(rectOriginToIntersect8, lightRectUnitHeight8);
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(zero8, projHeight8, _CMP_LE_OQ));
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(projHeight8, lightRectHeight8, _CMP_LE_OQ));
+
+            int bitMask = _mm256_movemask_ps(lit8);
+            for (int i = 0; i < 8; i++) {
+                if (bitMask & (1 << i)) {
                     const float32 lightIntensity = LIGHT_RECTS[l].intensity / numSamples;
                     outputColor += lightIntensity * LIGHT_RECTS[l].color;
                 }
             }
         }
-#endif
     }
 
     outputColor.r = ClampFloat32(outputColor.r, 0.0f, 1.0f);
