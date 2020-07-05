@@ -11,11 +11,17 @@
 #include "app_main.h"
 #include "lightmap.h"
 
+#define ENABLE_THREADS 0
+
+const uint32 BOUNCES = 1;
+
+const uint64 BENCHMARK_MEMORY = MEGABYTES(256);
+
 // Dummies for platform main
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
-const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
+const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(1);
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(vulkanState);
@@ -51,9 +57,11 @@ int main(int argc, char* argv[])
     srand((unsigned int)time(NULL));
 
     // Initialize memory
-    const uint64 memoryBytes = GIGABYTES(1);
-    void* memory = defaultAllocator_.Allocate(memoryBytes);
-    DEBUG_ASSERT(memory != nullptr);
+    LargeArray<uint8> memory = {
+        .size = BENCHMARK_MEMORY,
+        .data = (uint8*)defaultAllocator_.Allocate(BENCHMARK_MEMORY)
+    };
+    DEBUG_ASSERT(memory.data != nullptr);
 
     // Initialize app work queue
     AppWorkQueue appWorkQueue;
@@ -80,6 +88,9 @@ int main(int argc, char* argv[])
                      systemInfo.dwNumberOfProcessors, MAX_THREADS);
             numThreads = MAX_THREADS;
         }
+#if !ENABLE_THREADS
+        numThreads = 0;
+#endif
         for (int i = 0; i < numThreads; i++) {
             HANDLE* handle = threadHandles.Append();
             *handle = CreateThread(NULL, 0, WorkerThreadProc, &appWorkQueue, 0, NULL);
@@ -93,14 +104,14 @@ int main(int argc, char* argv[])
     }
 
     {
-        LinearAllocator allocator(memoryBytes, memory);
+        LinearAllocator allocator(memory);
 
         LoadObjResult obj;
         if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
             LOG_ERROR("Failed to load scene .obj when generating lightmaps\n");
             return 1;
         }
-        if (!GenerateLightmaps(obj, &appWorkQueue, &allocator, "data/lightmaps/%llu.png")) {
+        if (!GenerateLightmaps(obj, BOUNCES, &appWorkQueue, &allocator, "data/lightmaps/%llu.png")) {
             LOG_ERROR("Failed to generate lightmaps\n");
         }
     }

@@ -652,6 +652,8 @@ void LightmapRasterizeRow(const RaycastGeometry& geometry, uint32 meshInd, uint3
     }
 }
 
+uint32 bounce_ = 0;
+
 void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
 {
     WorkLightmapRasterizeRow* workData = (WorkLightmapRasterizeRow*)data;
@@ -660,9 +662,9 @@ void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
     if (remaining % 100 == 0) {
         const RaycastGeometry& geometry = *workData->common->geometry;
         const int32 meshInd = workData->common->meshInd;
-        LOG_INFO("%d rows in queue | processing mesh %lu, triangle %lu/%lu, row %d (%d pixels)\n",
-                 remaining, meshInd, workData->triangleInd, geometry.meshes[meshInd].triangles.size, workData->pixelY,
-                 workData->maxPixelX - workData->minPixelX);
+        LOG_INFO("%d rows in queue | bounce %lu, mesh %lu, triangle %lu/%lu, row %d (%d pixels)\n",
+                 remaining, bounce_, meshInd, workData->triangleInd, geometry.meshes[meshInd].triangles.size,
+                 workData->pixelY, workData->maxPixelX - workData->minPixelX);
     }
 
     LightmapRasterizeRow(*workData->common->geometry, workData->common->meshInd, workData->triangleInd,
@@ -850,6 +852,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
 
     for (uint32 b = 0; b < bounces; b++) {
         LOG_INFO("Bounce %lu\n", b);
+        bounce_ = b; // NOTE for logging purposes only
 
         ALLOCATOR_SCOPE_RESET(*allocator);
 
