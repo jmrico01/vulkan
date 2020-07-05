@@ -22,8 +22,6 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(32);
 
-const VkFilter LIGHTMAP_TEXTURE_FILTER = VK_FILTER_LINEAR;
-
 struct UniformBufferObject
 {
     alignas(16) Mat4 model;
@@ -60,7 +58,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         LoadObjResult obj;
         if (LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
-            if (GenerateLightmaps(obj, queue, &allocator, "data/lightmaps/%llu.png")) {
+            if (GenerateLightmaps(obj, LIGHTMAP_NUM_BOUNCES, queue, &allocator, "data/lightmaps/%llu.png")) {
                 AppUnloadVulkanState(vulkanState, memory);
                 if (!AppLoadVulkanState(vulkanState, memory)) {
                     LOG_ERROR("Failed to reload Vulkan state after lightmap generation\n");

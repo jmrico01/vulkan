@@ -4,35 +4,6 @@
 #include <stb_image_write.h>
 #include <time.h>
 
-// MODEL INDICES:
-// 0, 1, 2 - some rocks
-// 3 - box, left
-// 4 - head
-// 5 - box, right
-// 6 - some other rock
-// 7 - walls
-
-#define RESTRICT_LIGHTING 1
-const int MODELS_TO_LIGHT[] = {
-    7
-};
-
-#define RESTRICT_OCCLUSION 0
-#define MODEL_TO_OCCLUDE 3
-
-#define RESTRICT_WALL 1
-const uint64 PLANE_LEFT  = 0;
-const uint64 PLANE_BACK  = 1;
-const uint64 PLANE_RIGHT = 2;
-const uint64 PLANE_FLOOR = 3;
-#define PLANE_TO_LIGHT PLANE_FLOOR
-
-const float32 RESOLUTION_PER_WORLD_UNIT = 64.0f;
-const uint32 NUM_HEMISPHERE_SAMPLES = 64;
-const uint32 SAMPLES_PER_GROUP = 8;
-static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
-const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
-
 // SIMD helpers ------------------------------------------------------------------------
 
 struct Vec3_8
@@ -352,7 +323,7 @@ struct RaycastGeometry
     Array<RaycastMesh> meshes;
 };
 
-void GenerateHemisphereSamples(Array<Vec3> samples)
+internal void GenerateHemisphereSamples(Array<Vec3> samples)
 {
     for (uint32 i = 0; i < samples.size; i++) {
         Vec3 dir;
@@ -372,12 +343,12 @@ struct SampleGroup
 };
 
 // Provides a metric that is lower the closer together 2 unit direction vectors are (can be negative)
-float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
+internal float32 HemisphereDirCloseness(Vec3 dir1, Vec3 dir2)
 {
     return -Dot(dir1, dir2);
 }
 
-float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[SAMPLES_PER_GROUP])
+internal float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[SAMPLES_PER_GROUP])
 {
     float32 closeness = 0.0f;
     for (uint32 i = 0; i < 8; i++) {
@@ -388,7 +359,7 @@ float32 HemisphereGroupCloseness(const Array<Vec3>& samples, int groupIndices[SA
     return closeness;
 }
 
-void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, LinearAllocator* allocator)
+internal void GenerateHemisphereSampleGroups(Array<SampleGroup> sampleGroups, LinearAllocator* allocator)
 {
     ALLOCATOR_SCOPE_RESET(*allocator);
 
@@ -472,28 +443,31 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
     const __m256 zero8 = _mm256_setzero_ps();
     const Vec3_8 pos8 = Set1Vec3_8(pos);
     const Quat_8 xToNormalRot8 = Set1Quat_8(xToNormalRot);
-    const __m256 offset8 = _mm256_set1_ps(0.001f);
+    const float32 offset = 0.001f;
+    const __m256 offset8 = _mm256_set1_ps(offset);
+    const float32 sampleContribution = 1.0f / (float32)numSamples;
 
     static_assert(SAMPLES_PER_GROUP == 8);
 
     Vec3 outputColor = ambient;
     for (uint32 m = 0; m < sampleGroups.size; m++) {
-        Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
-        Vec3_8 sampleNormal8 = Multiply_8(xToNormalRot8, sample8);
-        Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
-        Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
+        const Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
+        const Vec3_8 sampleNormal8 = Multiply_8(xToNormalRot8, sample8);
+        const Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
+        const Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
 
         __m256i closestMeshInd8 = _mm256_set1_epi32(geometry.meshes.size);
         __m256i closestTriangleInd8 = _mm256_undefined_si256();
-        __m256 closestIntersectDist8 = largeFloat8;
+        __m256 closestTriangleDist8 = largeFloat8;
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
             if (i != MODEL_TO_OCCLUDE) continue;
 #endif
             const RaycastMesh& mesh = geometry.meshes[i];
             const __m256i meshInd8 = _mm256_set1_epi32(i);
-            // TODO also return min distance, and compare with closestIntersectDist8 ?
-            __m256 intersect8 = RayAxisAlignedBoxIntersection_8(originOffset8, sampleNormalInv8, mesh.min, mesh.max);
+            // TODO also return min distance, and compare with closestTriangleDist8 ?
+            const __m256 intersect8 = RayAxisAlignedBoxIntersection_8(originOffset8, sampleNormalInv8,
+                                                                      mesh.min, mesh.max);
             const int allZero = _mm256_testc_ps(zero8, intersect8);
             if (allZero) {
                 continue;
@@ -503,11 +477,12 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
                 const RaycastTriangle& triangle = mesh.triangles[j];
                 const __m256i triangleInd8 = _mm256_set1_epi32(j);
                 __m256 t8;
-                __m256 tIntersect8 = RayTriangleIntersection_8(originOffset8, sampleNormal8,
-                                                               triangle.pos[0], triangle.pos[1], triangle.pos[2], &t8);
+                const __m256 tIntersect8 = RayTriangleIntersection_8(originOffset8, sampleNormal8,
+                                                                     triangle.pos[0], triangle.pos[1], triangle.pos[2],
+                                                                     &t8);
 
-                const __m256 closerMask8 = _mm256_and_ps(_mm256_cmp_ps(t8, closestIntersectDist8, _CMP_LT_OQ), tIntersect8);
-                closestIntersectDist8 = _mm256_blendv_ps(closestIntersectDist8, t8, closerMask8);
+                const __m256 closerMask8 = _mm256_and_ps(_mm256_cmp_ps(t8, closestTriangleDist8, _CMP_LT_OQ), tIntersect8);
+                closestTriangleDist8 = _mm256_blendv_ps(closestTriangleDist8, t8, closerMask8);
 
                 const __m256i closerMask8i = _mm256_castps_si256(closerMask8);
                 closestMeshInd8 = _mm256_blendv_epi8(closestMeshInd8, meshInd8, closerMask8i);
@@ -515,7 +490,10 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             }
         }
 
+        __m256i closestLightInd8 = _mm256_set1_epi32(C_ARRAY_LENGTH(LIGHT_RECTS));
+        __m256 closestLightDist8 = largeFloat8;
         for (int l = 0; l < C_ARRAY_LENGTH(LIGHT_RECTS); l++) {
+            const __m256i lightInd = _mm256_set1_epi32(l);
             const Vec3_8 lightRectOrigin8 = Set1Vec3_8(LIGHT_RECTS[l].origin);
             const Vec3_8 lightRectNormal8 = Set1Vec3_8(Normalize(Cross(LIGHT_RECTS[l].width, LIGHT_RECTS[l].height)));
 
@@ -527,11 +505,12 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             const Vec3_8 lightRectUnitHeight8 = Divide_8(lightHeight8, lightRectHeight8);
 
             __m256 t8;
-            __m256 pIntersect8 = RayPlaneIntersection_8(pos8, sampleNormal8, lightRectOrigin8, lightRectNormal8, &t8);
+            const __m256 pIntersect8 = RayPlaneIntersection_8(pos8, sampleNormal8,
+                                                              lightRectOrigin8, lightRectNormal8, &t8);
 
-            // Pixels are lit only when 0.0f <= t < closestIntersectDist
+            // Pixels are lit only when 0.0f <= t < closestTriangleDist
             __m256 lit8 = _mm256_and_ps(pIntersect8, _mm256_cmp_ps(zero8, t8, _CMP_LE_OQ));
-            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(t8, closestIntersectDist8, _CMP_LT_OQ));
+            lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(t8, closestTriangleDist8, _CMP_LT_OQ));
 
             const Vec3_8 intersect8 = Add_8(pos8, Multiply_8(sampleNormal8, t8));
             const Vec3_8 rectOriginToIntersect8 = Subtract_8(intersect8, lightRectOrigin8);
@@ -544,12 +523,69 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(zero8, projHeight8, _CMP_LE_OQ));
             lit8 = _mm256_and_ps(lit8, _mm256_cmp_ps(projHeight8, lightRectHeight8, _CMP_LE_OQ));
 
-            int bitMask = _mm256_movemask_ps(lit8);
-            for (int i = 0; i < 8; i++) {
-                if (bitMask & (1 << i)) {
-                    const float32 lightIntensity = LIGHT_RECTS[l].intensity / numSamples;
-                    outputColor += lightIntensity * LIGHT_RECTS[l].color;
-                }
+            closestLightDist8 = _mm256_blendv_ps(closestLightDist8, t8, lit8);
+            const __m256i lit8i = _mm256_castps_si256(lit8);
+            closestLightInd8 = _mm256_blendv_epi8(closestLightInd8, lightInd, lit8i);
+        }
+
+        // TODO wow... there's definitely a better way to do this... right?
+        const int32 lightInds[8] = {
+            _mm256_extract_epi32(closestLightInd8, 0),
+            _mm256_extract_epi32(closestLightInd8, 1),
+            _mm256_extract_epi32(closestLightInd8, 2),
+            _mm256_extract_epi32(closestLightInd8, 3),
+            _mm256_extract_epi32(closestLightInd8, 4),
+            _mm256_extract_epi32(closestLightInd8, 5),
+            _mm256_extract_epi32(closestLightInd8, 6),
+            _mm256_extract_epi32(closestLightInd8, 7),
+        };
+        const int32 meshInds[8] = {
+            _mm256_extract_epi32(closestMeshInd8, 0),
+            _mm256_extract_epi32(closestMeshInd8, 1),
+            _mm256_extract_epi32(closestMeshInd8, 2),
+            _mm256_extract_epi32(closestMeshInd8, 3),
+            _mm256_extract_epi32(closestMeshInd8, 4),
+            _mm256_extract_epi32(closestMeshInd8, 5),
+            _mm256_extract_epi32(closestMeshInd8, 6),
+            _mm256_extract_epi32(closestMeshInd8, 7),
+        };
+        const int32 triangleInds[8] = {
+            _mm256_extract_epi32(closestTriangleInd8, 0),
+            _mm256_extract_epi32(closestTriangleInd8, 1),
+            _mm256_extract_epi32(closestTriangleInd8, 2),
+            _mm256_extract_epi32(closestTriangleInd8, 3),
+            _mm256_extract_epi32(closestTriangleInd8, 4),
+            _mm256_extract_epi32(closestTriangleInd8, 5),
+            _mm256_extract_epi32(closestTriangleInd8, 6),
+            _mm256_extract_epi32(closestTriangleInd8, 7),
+        };
+        for (int i = 0; i < 8; i++) {
+            if (lightInds[i] != C_ARRAY_LENGTH(LIGHT_RECTS)) {
+                const float32 lightIntensity = LIGHT_RECTS[lightInds[i]].intensity;
+                outputColor += lightIntensity * sampleContribution * LIGHT_RECTS[lightInds[i]].color;
+            }
+            else if ((uint32)meshInds[i] != geometry.meshes.size) {
+                const RaycastMesh& mesh = geometry.meshes[meshInds[i]];
+                const Lightmap& lightmap = mesh.lightmap;
+                const RaycastTriangle& triangle = mesh.triangles[triangleInds[i]];
+                const Vec3 sampleNormal = xToNormalRot * sampleGroups[m].group[i];
+                const Vec3 originOffset = pos + sampleNormal * offset;
+
+                Vec3 b;
+                const bool result = BarycentricCoordinates(originOffset, sampleNormal,
+                                                           triangle.pos[0], triangle.pos[1], triangle.pos[2], &b);
+                const Vec2 uv = triangle.uvs[0] * b.x + triangle.uvs[1] * b.y + triangle.uvs[2] * b.z;
+                const Vec2Int pixel = { (int)(uv.x * lightmap.squareSize), (int)(uv.y * lightmap.squareSize) };
+                const uint32 pixelValue = lightmap.pixels[pixel.y * lightmap.squareSize + pixel.x];
+                uint32 pixelR = pixelValue & 0xff;
+                uint32 pixelG = (pixelValue >> 8) & 0xff;
+                uint32 pixelB = (pixelValue >> 16) & 0xff;
+                const Vec3 pixelColor = {
+                    (float32)pixelR / 255.0f,
+                    (float32)pixelG / 255.0f,
+                    (float32)pixelB / 255.0f
+                };
+                outputColor += sampleContribution * pixelColor;
             }
         }
     }
@@ -711,11 +747,13 @@ internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
     CompleteAllWork(queue);
 }
 
-bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllocator* allocator,
+bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* queue, LinearAllocator* allocator,
                        const char* pngPathFmt)
 {
     RaycastGeometry geometry;
     geometry.meshes = allocator->NewArray<RaycastMesh>(obj.models.size);
+
+    uint32 totalTriangles = 0;
     for (uint32 i = 0; i < obj.models.size; i++) {
         RaycastMesh& mesh = geometry.meshes[i];
         mesh.triangles = allocator->NewArray<RaycastTriangle>(obj.models[i].triangles.size);
@@ -737,6 +775,8 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
             triangle.normal = v0.normal; // NOTE flat shading, all normals are the same
 
             surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
+
+            totalTriangles++;
         }
 
         // Calculate AABB
@@ -765,27 +805,47 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
         MemSet(mesh.lightmap.pixels, 0, squareSize * squareSize * sizeof(uint32));
     }
 
+    LOG_INFO("Generating lightmaps for %lu meshes, %lu total triangles, %lu bounces\n",
+             geometry.meshes.size, totalTriangles, bounces);
+
     DebugTimer lightmapTimer = StartDebugTimer();
 
-#if RESTRICT_LIGHTING
-    for (uint32 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[++m])
-#else
-    for (uint32 i = 0; i < geometry.meshes.size; i++)
-#endif
-    {
-        LOG_INFO("Lighting mesh %lu\n", i);
+    for (uint32 b = 0; b < bounces; b++) {
+        LOG_INFO("Bounce %lu\n", b);
+
         ALLOCATOR_SCOPE_RESET(*allocator);
 
-        const uint32 squareSize = geometry.meshes[i].lightmap.squareSize;
-        Lightmap lightmap = {
-            .squareSize = squareSize,
-            .pixels = allocator->New<uint32>(squareSize * squareSize)
-        };
+        Array<Lightmap> lightmaps = allocator->NewArray<Lightmap>(geometry.meshes.size);
+        for (uint32 i = 0; i < geometry.meshes.size; i++) {
+            const uint32 squareSize = geometry.meshes[i].lightmap.squareSize;
+            lightmaps[i].squareSize = squareSize,
+            lightmaps[i].pixels = allocator->New<uint32>(squareSize * squareSize);
+            MemSet(lightmaps[i].pixels, 0, squareSize * squareSize * sizeof(uint32));
+        }
 
-        CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmap);
+#if RESTRICT_LIGHTING
+        for (uint32 m = 0, i = MODELS_TO_LIGHT[m]; m < C_ARRAY_LENGTH(MODELS_TO_LIGHT); i = MODELS_TO_LIGHT[++m])
+#else
+        for (uint32 i = 0; i < geometry.meshes.size; i++)
+#endif
+        {
+            LOG_INFO("Lighting mesh %lu\n", i);
 
-        const char* filePath = ToCString(AllocPrintf(allocator, pngPathFmt, i), allocator);
-        stbi_write_png(filePath, lightmap.squareSize, lightmap.squareSize, 4, lightmap.pixels, 0);
+            ALLOCATOR_SCOPE_RESET(*allocator);
+            CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmaps[i]);
+
+            // Save calculated lightmap to file
+            const char* filePath = ToCString(AllocPrintf(allocator, pngPathFmt, i), allocator);
+            stbi_write_png(filePath, lightmaps[i].squareSize, lightmaps[i].squareSize, 4, lightmaps[i].pixels, 0);
+        }
+
+        if (b != bounces - 1) {
+            // Copy calculated lightmaps to RaycastGeometry for the next bounce
+            for (uint32 i = 0; i < geometry.meshes.size; i++) {
+                const uint32 squareSize = lightmaps[i].squareSize;
+                MemCopy(geometry.meshes[i].lightmap.pixels, lightmaps[i].pixels, squareSize * squareSize * sizeof(uint32));
+            }
+        }
     }
 
     StopAndPrintDebugTimer(&lightmapTimer);
