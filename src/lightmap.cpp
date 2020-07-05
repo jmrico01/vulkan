@@ -433,16 +433,18 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
             .width = { -2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 1.0f, 0.0f, 0.0f },
-            .intensity = 1.0f
+            .intensity = 2.0f
         },
         {
             .origin = { 2.0f, -1.544835f + 0.005f, 2.24f },
             .width = { 2.0f, 0.0f, 0.0f },
             .height = { 0.0f, 0.0f, -2.2f },
             .color = Vec3 { 0.0f, 0.0f, 1.0f },
-            .intensity = 1.0f
+            .intensity = 2.0f
         },
     };
+
+    const float32 MATERIAL_REFLECTANCE = 0.3f;
 
     const uint32 numSamples = sampleGroups.size * SAMPLES_PER_GROUP;
 
@@ -600,7 +602,8 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
                         (float32)pixelB / 255.0f
                     };
                     // TODO adjust color based on material properties, e.g. material should absorb some light
-                    outputColor += sampleContribution * pixelColor;
+                    float32 weight = MATERIAL_REFLECTANCE;
+                    outputColor += weight * sampleContribution * pixelColor;
                 }
             }
         }
