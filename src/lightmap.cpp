@@ -315,7 +315,7 @@ void StopAndPrintDebugTimer(DebugTimer* timer)
 {
     StopDebugTimer(timer);
     const float32 win32Time = (float32)timer->win32Time / DebugTimer::win32Freq * 1000.0f;
-    LOG_INFO("Timer: %.03fms | %llu MC | %llu C\n", win32Time, timer->cycles / 1000000, timer->cycles);
+    LOG_INFO("Timer: %.03fms | %llu MC\n", win32Time, timer->cycles / 1000000);
 }
 
 struct LightRect
@@ -325,6 +325,12 @@ struct LightRect
     Vec3 height;
     Vec3 color;
     float32 intensity;
+};
+
+struct Lightmap
+{
+    uint32 squareSize;
+    uint32* pixels;
 };
 
 struct RaycastTriangle
@@ -337,6 +343,7 @@ struct RaycastTriangle
 struct RaycastMesh
 {
     Vec3 min, max;
+    Lightmap lightmap;
     Array<RaycastTriangle> triangles;
 };
 
@@ -555,11 +562,10 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
 struct WorkLightmapRasterizeRowCommon
 {
-    int squareSize;
     Array<SampleGroup> hemisphereSampleGroups;
     const RaycastGeometry* geometry;
-    uint32* pixels;
     uint32 meshInd;
+    Lightmap* lightmap;
 };
 
 struct WorkLightmapRasterizeRow
@@ -569,10 +575,12 @@ struct WorkLightmapRasterizeRow
     int minPixelX, maxPixelX, pixelY;
 };
 
-void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixelY, uint32 meshInd, uint32 triangleInd,
-                          Array<SampleGroup> hemisphereSampleGroups, const RaycastGeometry& geometry, uint32* pixels)
+void LightmapRasterizeRow(const RaycastGeometry& geometry, uint32 meshInd, uint32 triangleInd,
+                          int minPixelX, int maxPixelX, int pixelY, Array<SampleGroup> hemisphereSampleGroups,
+                          Lightmap* lightmap)
 {
     const RaycastTriangle& triangle = geometry.meshes[meshInd].triangles[triangleInd];
+    const uint32 squareSize = lightmap->squareSize;
     const float32 uvY = (float32)pixelY / squareSize;
 
     for (int x = minPixelX; x < maxPixelX; x++) {
@@ -585,7 +593,7 @@ void LightmapRasterizeRow(int squareSize, int minPixelX, int maxPixelX, int pixe
         uint8 g = (uint8)(raycastColor.g * 255.0f);
         uint8 b = (uint8)(raycastColor.b * 255.0f);
         uint8 a = 0xff;
-        pixels[pixelY * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
+        lightmap->pixels[pixelY * squareSize + x] = (a << 24) + (b << 16) + (g << 8) + r;
     }
 }
 
@@ -602,32 +610,31 @@ void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
                  workData->maxPixelX - workData->minPixelX);
     }
 
-    LightmapRasterizeRow(workData->common->squareSize, workData->minPixelX, workData->maxPixelX, workData->pixelY,
-                         workData->common->meshInd, workData->triangleInd, workData->common->hemisphereSampleGroups,
-                         *workData->common->geometry, workData->common->pixels);
+    LightmapRasterizeRow(*workData->common->geometry, workData->common->meshInd, workData->triangleInd,
+                         workData->minPixelX, workData->maxPixelX, workData->pixelY, 
+                         workData->common->hemisphereSampleGroups, workData->common->lightmap);
 }
 
 internal void CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
-                                       LinearAllocator* allocator, int squareSize, uint32* pixels)
+                                       LinearAllocator* allocator, Lightmap* lightmap)
 {
     const int LIGHTMAP_PIXEL_MARGIN = 1;
-
-    MemSet(pixels, 0, squareSize * squareSize * sizeof(uint32));
 
     StaticArray<SampleGroup, NUM_HEMISPHERE_SAMPLE_GROUPS> hemisphereSampleGroups;
     Array<SampleGroup> hemisphereSampleGroupsArray = hemisphereSampleGroups.ToArray();
     GenerateHemisphereSampleGroups(hemisphereSampleGroupsArray, allocator);
 
     const WorkLightmapRasterizeRowCommon workCommon = {
-        .squareSize = squareSize,
         .hemisphereSampleGroups = hemisphereSampleGroupsArray,
         .geometry = &geometry,
-        .pixels = pixels,
-        .meshInd = meshInd
+        .meshInd = meshInd,
+        .lightmap = lightmap
     };
     auto allocatorState = allocator->SaveState();
 
     const RaycastMesh& mesh = geometry.meshes[meshInd];
+    const uint32 squareSize = mesh.lightmap.squareSize;
+
     for (uint32 i = 0; i < mesh.triangles.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_WALL
         if (i / 2 != PLANE_TO_LIGHT) continue;
@@ -708,40 +715,55 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
                        const char* pngPathFmt)
 {
     RaycastGeometry geometry;
-    DynamicArray<RaycastMesh, LinearAllocator> meshes(allocator);
+    geometry.meshes = allocator->NewArray<RaycastMesh>(obj.models.size);
     for (uint32 i = 0; i < obj.models.size; i++) {
-        DynamicArray<RaycastTriangle, LinearAllocator> triangles(allocator);
+        RaycastMesh& mesh = geometry.meshes[i];
+        mesh.triangles = allocator->NewArray<RaycastTriangle>(obj.models[i].triangles.size);
+
+        // Copy triangle geometry data
+        float32 surfaceArea = 0.0f;
         for (uint32 j = 0; j < obj.models[i].triangles.size; j++) {
-            const MeshTriangle& triangle = obj.models[i].triangles[j];
-            RaycastTriangle* newTriangle = triangles.Append();
-            newTriangle->pos[0] = triangle.v[0].pos;
-            newTriangle->pos[1] = triangle.v[1].pos;
-            newTriangle->pos[2] = triangle.v[2].pos;
-            newTriangle->uvs[0] = triangle.v[0].uv;
-            newTriangle->uvs[1] = triangle.v[1].uv;
-            newTriangle->uvs[2] = triangle.v[2].uv;
-            newTriangle->normal = triangle.v[0].normal; // NOTE flat shading, all normals are the same
+            const Vertex v0 = obj.models[i].triangles[j].v[0];
+            const Vertex v1 = obj.models[i].triangles[j].v[1];
+            const Vertex v2 = obj.models[i].triangles[j].v[2];
+            RaycastTriangle& triangle = mesh.triangles[j];
+
+            triangle.pos[0] = v0.pos;
+            triangle.pos[1] = v1.pos;
+            triangle.pos[2] = v2.pos;
+            triangle.uvs[0] = v0.uv;
+            triangle.uvs[1] = v1.uv;
+            triangle.uvs[2] = v2.uv;
+            triangle.normal = v0.normal; // NOTE flat shading, all normals are the same
+
+            surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
         }
 
-        RaycastMesh* mesh = meshes.Append();
-        mesh->triangles = triangles.ToArray();
-        mesh->min = Vec3::one * 1e8;
-        mesh->max = -Vec3::one * 1e8;
-        for (uint32 j = 0; j < triangles.size; j++) {
+        // Calculate AABB
+        mesh.min = Vec3::one * 1e8;
+        mesh.max = -Vec3::one * 1e8;
+        for (uint32 j = 0; j < mesh.triangles.size; j++) {
             for (int k = 0; k < 3; k++) {
-                const Vec3 v = triangles[j].pos[k];
+                const Vec3 v = mesh.triangles[j].pos[k];
                 for (int e = 0; e < 3; e++) {
-                    if (v.e[e] < mesh->min.e[e]) {
-                        mesh->min.e[e] = v.e[e];
-                    }
-                    if (v.e[e] > mesh->max.e[e]) {
-                        mesh->max.e[e] = v.e[e];
-                    }
+                    mesh.min.e[e] = MinFloat32(mesh.min.e[e], v.e[e]);
+                    mesh.max.e[e] = MaxFloat32(mesh.max.e[e], v.e[e]);
                 }
             }
         }
+
+        // Allocate lightmap
+        const uint32 size = (uint32)(sqrt(surfaceArea) * RESOLUTION_PER_WORLD_UNIT);
+        const uint32 squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
+        mesh.lightmap.squareSize = squareSize;
+        mesh.lightmap.pixels = allocator->New<uint32>(squareSize * squareSize);
+        if (mesh.lightmap.pixels == nullptr) {
+            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %lu\n", squareSize, squareSize, i);
+            return false;
+        }
+
+        MemSet(mesh.lightmap.pixels, 0, squareSize * squareSize * sizeof(uint32));
     }
-    geometry.meshes = meshes.ToArray();
 
     DebugTimer lightmapTimer = StartDebugTimer();
 
@@ -754,24 +776,16 @@ bool GenerateLightmaps(const LoadObjResult& obj, AppWorkQueue* queue, LinearAllo
         LOG_INFO("Lighting mesh %lu\n", i);
         ALLOCATOR_SCOPE_RESET(*allocator);
 
-        float32 surfaceArea = 0.0f;
-        for (uint32 j = 0; j < geometry.meshes[i].triangles.size; j++) {
-            const RaycastTriangle& triangle = geometry.meshes[i].triangles[j];
-            surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
-        }
-        const int size = (int)(sqrt(surfaceArea) * RESOLUTION_PER_WORLD_UNIT);
-        const int squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
+        const uint32 squareSize = geometry.meshes[i].lightmap.squareSize;
+        Lightmap lightmap = {
+            .squareSize = squareSize,
+            .pixels = allocator->New<uint32>(squareSize * squareSize)
+        };
 
-        uint32* pixels = allocator->New<uint32>(squareSize * squareSize);
-        if (pixels == nullptr) {
-            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %lu\n", squareSize, squareSize, i);
-            return false;
-        }
-
-        CalculateLightmapForMesh(geometry, i, queue, allocator, squareSize, pixels);
+        CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmap);
 
         const char* filePath = ToCString(AllocPrintf(allocator, pngPathFmt, i), allocator);
-        stbi_write_png(filePath, squareSize, squareSize, 4, pixels, 0);
+        stbi_write_png(filePath, lightmap.squareSize, lightmap.squareSize, 4, lightmap.pixels, 0);
     }
 
     StopAndPrintDebugTimer(&lightmapTimer);
