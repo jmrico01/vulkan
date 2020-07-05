@@ -12,23 +12,23 @@
 // 6 - some other rock
 // 7 - walls
 
-#define RESTRICT_LIGHTING 0
+#define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    3
+    7
 };
 
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 0
+#define RESTRICT_WALL 1
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;
 const uint64 PLANE_FLOOR = 3;
 #define PLANE_TO_LIGHT PLANE_FLOOR
 
-const float32 RESOLUTION_PER_WORLD_UNIT = 256.0f;
-const uint32 NUM_HEMISPHERE_SAMPLES = 256;
+const float32 RESOLUTION_PER_WORLD_UNIT = 64.0f;
+const uint32 NUM_HEMISPHERE_SAMPLES = 64;
 const uint32 SAMPLES_PER_GROUP = 8;
 static_assert(NUM_HEMISPHERE_SAMPLES % SAMPLES_PER_GROUP == 0);
 const uint32 NUM_HEMISPHERE_SAMPLE_GROUPS = NUM_HEMISPHERE_SAMPLES / SAMPLES_PER_GROUP;
@@ -468,6 +468,7 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
     const __m256 offset8 = _mm256_set1_ps(0.001f);
 
     static_assert(SAMPLES_PER_GROUP == 8);
+
     Vec3 outputColor = ambient;
     for (uint32 m = 0; m < sampleGroups.size; m++) {
         Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
@@ -475,12 +476,15 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
         Vec3_8 sampleNormalInv8 = Inverse_8(sampleNormal8);
         Vec3_8 originOffset8 = Add_8(pos8, Multiply_8(sampleNormal8, offset8));
 
+        __m256i closestMeshInd8 = _mm256_undefined_si256();
+        __m256i closestTriangleInd8 = _mm256_undefined_si256();
         __m256 closestIntersectDist8 = largeFloat8;
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
 #if RESTRICT_LIGHTING && RESTRICT_OCCLUSION
             if (i != MODEL_TO_OCCLUDE) continue;
 #endif
             const RaycastMesh& mesh = geometry.meshes[i];
+            const __m256i meshInd8 = _mm256_set1_epi32(i);
             // TODO also return min distance, and compare with closestIntersectDist8 ?
             __m256 intersect8 = RayAxisAlignedBoxIntersection_8(originOffset8, sampleNormalInv8, mesh.min, mesh.max);
             const int allZero = _mm256_testc_ps(zero8, intersect8);
@@ -490,11 +494,17 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
             for (uint32 j = 0; j < mesh.triangles.size; j++) {
                 const RaycastTriangle& triangle = mesh.triangles[j];
+                const __m256i triangleInd8 = _mm256_set1_epi32(j);
                 __m256 t8;
                 __m256 tIntersect8 = RayTriangleIntersection_8(originOffset8, sampleNormal8,
                                                                triangle.pos[0], triangle.pos[1], triangle.pos[2], &t8);
-                t8 = _mm256_blendv_ps(largeFloat8, t8, tIntersect8);
-                closestIntersectDist8 = _mm256_min_ps(closestIntersectDist8, t8);
+
+                const __m256 closerMask8 = _mm256_and_ps(_mm256_cmp_ps(t8, closestIntersectDist8, _CMP_LT_OQ), tIntersect8);
+                closestIntersectDist8 = _mm256_blendv_ps(closestIntersectDist8, t8, closerMask8);
+
+                const __m256i closerMask8i = _mm256_castps_si256(closerMask8);
+                closestMeshInd8 = _mm256_blendv_epi8(closestMeshInd8, meshInd8, closerMask8i);
+                closestTriangleInd8 = _mm256_blendv_epi8(closestTriangleInd8, triangleInd8, closerMask8i);
             }
         }
 
