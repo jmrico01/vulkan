@@ -10,15 +10,17 @@ layout(location = 0) out vec4 outColor;
 layout(binding = 1) uniform sampler2D texSampler;
 
 void main() {
-    vec3 colorAmbient = vec3(0.05f, 0.05f, 0.05f);
-    vec3 colorLight = vec3(0.9f, 0.9f, 0.9f);
-    vec3 lightDir = normalize(vec3(0.2f, 0.3f, 1.0f));
+	vec3 colorAmbient = vec3(0.05f, 0.05f, 0.05f);
+	vec3 colorLight = vec3(0.9f, 0.9f, 0.9f);
+	vec3 lightDir = normalize(vec3(0.2f, 0.3f, 1.0f));
 
-    float lightBounce = max(dot(-lightDir, inNormal), 0.0);
-    vec3 texColor = texture(texSampler, inUv).rgb;
+	float lightBounce = max(dot(-lightDir, inNormal), 0.0);
+	vec3 texColor = texture(texSampler, inUv).rgb;
 
 	vec3 finalColor = (colorAmbient + colorLight * lightBounce) * texColor;
 
     // outColor = vec4(finalColor, 1.0);
-    outColor = vec4(inColor + texture(texSampler, inUv).rgb, 1.0);
+	vec3 vertexColor = inColor;
+	vec3 lightmapColor = texture(texSampler, inUv).rgb;
+	outColor = vec4(lightmapColor, 1.0);
 }

@@ -13,7 +13,7 @@
 // 6 - some other rock
 // 7 - walls
 
-#define RESTRICT_LIGHTING 1
+#define RESTRICT_LIGHTING 0
 const int MODELS_TO_LIGHT[] = {
     7
 };

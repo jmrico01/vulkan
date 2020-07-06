@@ -511,7 +511,45 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             LOG_ERROR("Failed to load Vulkan geometry from obj\n");
             return false;
         }
+
+        uint32 startInd = 0;
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            const_string filePath = AllocPrintf(&allocator, "data/lightmaps/%llu.v", i);
+            Array<uint8> vertexColors = LoadEntireFile(filePath, &allocator);
+            if (vertexColors.data == nullptr) {
+                LOG_ERROR("Failed to load vertex colors for mesh %lu\n", i);
+                return false;
+            }
+
+            const bool sizeEvenVec3 = vertexColors.size % sizeof(Vec3) == 0;
+            const bool sizeEvenTriangles = (vertexColors.size / sizeof(Vec3)) % 3 == 0;
+            if (!sizeEvenVec3 || !sizeEvenTriangles) {
+                LOG_ERROR("Incorrect format for vertex colors at %.*s, mesh %lu\n", filePath.size, filePath.data, i);
+                return false;
+            }
+
+            const uint32 expectedColors = (geometry.meshEndInds[i] - startInd) * 3;
+            const uint32 numColors = vertexColors.size / sizeof(Vec3);
+            if (expectedColors != numColors) {
+                LOG_ERROR("Mismatched number of vertex colors, expected %lu, got %lu\n", expectedColors, numColors);
+                return false;
+            }
+
+            const Array<Vec3> colors = {
+                .size = vertexColors.size / sizeof(Vec3),
+                .data = (Vec3*)vertexColors.data
+            };
+            for (uint32 j = startInd; j < geometry.meshEndInds[i]; j++) {
+                const uint32 colorInd = (j - startInd) * 3;
+                geometry.triangles[j][0].color = colors[colorInd];
+                geometry.triangles[j][1].color = colors[colorInd + 1];
+                geometry.triangles[j][2].color = colors[colorInd + 2];
+            }
+
+            startInd = geometry.meshEndInds[i];
+        }
     }
+
 
     // Create vertex buffer
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
@@ -551,64 +589,6 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
         vkDestroyBuffer(window.device, stagingBuffer, nullptr);
         vkFreeMemory(window.device, stagingBufferMemory, nullptr);
-    }
-
-    // Create uniform buffer
-    {
-        VkDeviceSize uniformBufferSize = sizeof(UniformBufferObject);
-        if (!CreateBuffer(uniformBufferSize,
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          window.device, window.physicalDevice, &app->uniformBuffer, &app->uniformBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for uniform buffer\n");
-            return false;
-        }
-    }
-
-    // Create descriptor pool
-    {
-        VkDescriptorPoolSize poolSizes[2] = {};
-        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = 1;
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[1].descriptorCount = 1;
-
-        VkDescriptorPoolCreateInfo poolInfo = {};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
-        poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = geometry.meshEndInds.size;
-
-        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->descriptorPool) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDescriptorPool failed\n");
-            return false;
-        }
-    }
-
-    // Create texture sampler
-    {
-        VkSamplerCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        createInfo.magFilter = LIGHTMAP_TEXTURE_FILTER;
-        createInfo.minFilter = LIGHTMAP_TEXTURE_FILTER;
-        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.anisotropyEnable = VK_FALSE;
-        createInfo.maxAnisotropy = 1.0f;
-        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        createInfo.unnormalizedCoordinates = VK_FALSE;
-        createInfo.compareEnable = VK_FALSE;
-        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        createInfo.mipLodBias = 0.0f;
-        createInfo.minLod = 0.0f;
-        createInfo.maxLod = 0.0f;
-
-        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->textureSampler) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateSampler failed\n");
-            return false;
-        }
     }
 
     // Create lightmaps
@@ -667,6 +647,64 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
                 LOG_ERROR("CreateImageView failed\n");
                 return false;
             }
+        }
+    }
+
+    // Create uniform buffer
+    {
+        VkDeviceSize uniformBufferSize = sizeof(UniformBufferObject);
+        if (!CreateBuffer(uniformBufferSize,
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice, &app->uniformBuffer, &app->uniformBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for uniform buffer\n");
+            return false;
+        }
+    }
+
+    // Create descriptor pool
+    {
+        VkDescriptorPoolSize poolSizes[2] = {};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 1;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = 1;
+
+        VkDescriptorPoolCreateInfo poolInfo = {};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = geometry.meshEndInds.size;
+
+        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->descriptorPool) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorPool failed\n");
+            return false;
+        }
+    }
+
+    // Create texture sampler
+    {
+        VkSamplerCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        createInfo.magFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.minFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.anisotropyEnable = VK_FALSE;
+        createInfo.maxAnisotropy = 1.0f;
+        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        createInfo.unnormalizedCoordinates = VK_FALSE;
+        createInfo.compareEnable = VK_FALSE;
+        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        createInfo.mipLodBias = 0.0f;
+        createInfo.minLod = 0.0f;
+        createInfo.maxLod = 0.0f;
+
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->textureSampler) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSampler failed\n");
+            return false;
         }
     }
 
@@ -772,19 +810,15 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             const VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
+            uint32 startTriangleInd = 0;
             for (uint32 j = 0; j < geometry.meshEndInds.size; j++) {
                 vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
                                         &app->descriptorSets[j], 0, nullptr);
 
-                uint32 startTriangleInd;
-                if (j != 0) {
-                    startTriangleInd = geometry.meshEndInds[j - 1];
-                }
-                else {
-                    startTriangleInd = 0;
-                }
                 const uint32 numTriangles = geometry.meshEndInds[j] - startTriangleInd;
                 vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
+
+                startTriangleInd = geometry.meshEndInds[j];
             }
 
             vkCmdEndRenderPass(buffer);
