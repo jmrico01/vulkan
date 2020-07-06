@@ -43,8 +43,11 @@ bool LoadObj(const_string filePath, LoadObjResult* result, LinearAllocator* allo
         if (next.size == 0) {
             break;
         }
-        else if (next[next.size - 1] == '\r' && next.size <= 1) {
-            break;
+        else if (next[next.size - 1] == '\r') {
+            next.size--;
+            if (next.size == 0) {
+                break;
+            }
         }
 
         if (next.size < 2) continue;
