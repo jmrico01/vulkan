@@ -22,5 +22,5 @@ void main() {
     // outColor = vec4(finalColor, 1.0);
 	vec3 vertexColor = inColor;
 	vec3 lightmapColor = texture(texSampler, inUv).rgb;
-	outColor = vec4(lightmapColor, 1.0);
+	outColor = vec4(vertexColor, 1.0);
 }

@@ -309,7 +309,6 @@ struct RaycastTriangle
     Vec3 pos[3];
     // TODO move these somewhere else. I think only pos is used in the hot raycasting loops
     Vec3 color[3];
-    Vec3 outDir[3];
     Vec3 normal;
     Vec2 uvs[3];
 };
@@ -410,25 +409,6 @@ RaycastGeometry CreateRaycastGeometry(const LoadObjResult& obj, LinearAllocator*
         }
 
         MemSet(mesh.lightmap.pixels, 0, squareSize * squareSize * sizeof(uint32));
-    }
-
-    for (uint32 i = 0; i < geometry.meshes.size; i++) {
-        for (uint32 j = 0; j < geometry.meshes[i].triangles.size; j++) {
-            for (int k = 0; k < 3; k++) {
-                const Vec3 pos = geometry.meshes[i].triangles[j].pos[k];
-                Vec3 sumNormals = Vec3::zero;
-                for (uint32 i2 = 0; i2 < geometry.meshes.size; i2++) {
-                    for (uint32 j2 = 0; j2 < geometry.meshes[i2].triangles.size; j2++) {
-                        for (int k2 = 0; k2 < 3; k2++) {
-                            if (pos == geometry.meshes[i2].triangles[j2].pos[k2]) {
-                                sumNormals += geometry.meshes[i2].triangles[j2].normal;
-                            }
-                        }
-                    }
-                }
-                geometry.meshes[i].triangles[j].outDir[k] = Normalize(sumNormals);
-            }
-        }
     }
 
     return geometry;
@@ -907,7 +887,8 @@ bool LightMeshVertices(const RaycastGeometry& geometry, uint32 meshInd, LinearAl
     for (uint32 i = 0; i < geometry.meshes[meshInd].triangles.size; i++) {
         const RaycastTriangle& t = geometry.meshes[meshInd].triangles[i];
         for (int j = 0; j < 3; j++) {
-            const Vec3 raycastColor = RaycastColor(hemisphereSampleGroups, t.pos[j], t.outDir[j], geometry);
+            const Vec3 dir = t.normal;
+            const Vec3 raycastColor = RaycastColor(hemisphereSampleGroups, t.pos[j], dir, geometry);
             vertexColors[i * 3 + j] = raycastColor;
         }
     }
