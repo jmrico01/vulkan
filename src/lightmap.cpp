@@ -307,8 +307,11 @@ struct Lightmap
 struct RaycastTriangle
 {
     Vec3 pos[3];
-    Vec2 uvs[3];
+    // TODO move these somewhere else. I think only pos is used in the hot raycasting loops
+    Vec3 color[3];
+    Vec3 outDir[3];
     Vec3 normal;
+    Vec2 uvs[3];
 };
 
 struct RaycastMesh
@@ -322,6 +325,114 @@ struct RaycastGeometry
 {
     Array<RaycastMesh> meshes;
 };
+
+RaycastGeometry CreateRaycastGeometry(const LoadObjResult& obj, LinearAllocator* allocator)
+{
+    RaycastGeometry geometry;
+    geometry.meshes = allocator->NewArray<RaycastMesh>(obj.models.size);
+    if (geometry.meshes.data == nullptr) {
+        return geometry;
+    }
+
+    const Vec3 vertexColor = Vec3::zero;
+
+    for (uint32 i = 0; i < obj.models.size; i++) {
+        RaycastMesh& mesh = geometry.meshes[i];
+        const uint32 numTriangles = obj.models[i].triangles.size + obj.models[i].quads.size * 2;
+        mesh.triangles = allocator->NewArray<RaycastTriangle>(numTriangles);
+        if (mesh.triangles.data == nullptr) {
+            LOG_ERROR("Failed to allocate triangles for raycast mesh %lu\n", i);
+            geometry.meshes.data = nullptr;
+            return geometry;
+        }
+
+        // Fill in triangle geometry data
+        for (uint32 j = 0; j < obj.models[i].triangles.size; j++) {
+            const ObjTriangle& t = obj.models[i].triangles[j];
+            const Vec3 normal = CalculateTriangleUnitNormal(t.v[0].pos, t.v[1].pos, t.v[2].pos);
+
+            for (int k = 0; k < 3; k++) {
+                mesh.triangles[j].pos[k] = t.v[k].pos;
+                mesh.triangles[j].uvs[k] = t.v[k].uv;
+                mesh.triangles[j].color[k] = vertexColor;
+            }
+            mesh.triangles[j].normal = normal;
+        }
+        for (uint32 j = 0; j < obj.models[i].quads.size; j++) {
+            const uint32 ind = obj.models[i].triangles.size + j * 2;
+            const ObjQuad& q = obj.models[i].quads[j];
+            const Vec3 normal = CalculateTriangleUnitNormal(q.v[0].pos, q.v[1].pos, q.v[2].pos);
+
+            for (int k = 0; k < 3; k++) {
+                mesh.triangles[ind].pos[k] = q.v[k].pos;
+                mesh.triangles[ind].uvs[k] = q.v[k].uv;
+                mesh.triangles[ind].color[k] = vertexColor;
+            }
+            mesh.triangles[ind].normal = normal;
+
+            for (int k = 0; k < 3; k++) {
+                const uint32 quadInd = (k + 2) % 4;
+                mesh.triangles[ind + 1].pos[k] = q.v[quadInd].pos;
+                mesh.triangles[ind + 1].uvs[k] = q.v[quadInd].uv;
+                mesh.triangles[ind + 1].color[k] = vertexColor;
+            }
+            mesh.triangles[ind + 1].normal = normal;
+        }
+
+        float32 surfaceArea = 0.0f;
+        for (uint32 j = 0; j < mesh.triangles.size; j++) {
+            const RaycastTriangle& t = mesh.triangles[j];
+            surfaceArea += TriangleArea(t.pos[0], t.pos[1], t.pos[2]);
+        }
+
+        // Calculate AABB
+        mesh.min = Vec3::one * 1e8;
+        mesh.max = -Vec3::one * 1e8;
+        for (uint32 j = 0; j < mesh.triangles.size; j++) {
+            for (int k = 0; k < 3; k++) {
+                const Vec3 v = mesh.triangles[j].pos[k];
+                for (int e = 0; e < 3; e++) {
+                    mesh.min.e[e] = MinFloat32(mesh.min.e[e], v.e[e]);
+                    mesh.max.e[e] = MaxFloat32(mesh.max.e[e], v.e[e]);
+                }
+            }
+        }
+
+        // Allocate lightmap
+        const uint32 size = (uint32)(sqrt(surfaceArea) * RESOLUTION_PER_WORLD_UNIT);
+        const uint32 squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
+        mesh.lightmap.squareSize = squareSize;
+        mesh.lightmap.pixels = allocator->New<uint32>(squareSize * squareSize);
+        if (mesh.lightmap.pixels == nullptr) {
+            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %lu\n", squareSize, squareSize, i);
+            geometry.meshes.data = nullptr;
+            return geometry;
+        }
+
+        MemSet(mesh.lightmap.pixels, 0, squareSize * squareSize * sizeof(uint32));
+    }
+
+    for (uint32 i = 0; i < geometry.meshes.size; i++) {
+        for (uint32 j = 0; j < geometry.meshes[i].triangles.size; j++) {
+            for (int k = 0; k < 3; k++) {
+                const Vec3 pos = geometry.meshes[i].triangles[j].pos[k];
+                Vec3 sumNormals = Vec3::zero;
+                for (uint32 i2 = 0; i2 < geometry.meshes.size; i2++) {
+                    for (uint32 j2 = 0; j2 < geometry.meshes[i2].triangles.size; j2++) {
+                        for (int k2 = 0; k2 < 3; k2++) {
+                            if (pos == geometry.meshes[i2].triangles[j2].pos[k2]) {
+                                sumNormals += geometry.meshes[i2].triangles[j2].normal;
+                            }
+                        }
+                    }
+                }
+                geometry.meshes[i].triangles[j].outDir[k] = Normalize(sumNormals);
+            }
+        }
+    }
+
+    return geometry;
+}
 
 internal void GenerateHemisphereSamples(Array<Vec3> samples)
 {
@@ -779,70 +890,43 @@ internal bool CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
     return true;
 }
 
-bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* queue, LinearAllocator* allocator,
-                       const char* pngPathFmt)
+bool LightMeshVertices(const RaycastGeometry& geometry, uint32 meshInd, LinearAllocator* allocator,
+                       Array<Vec3> vertexColors)
 {
-    RaycastGeometry geometry;
-    geometry.meshes = allocator->NewArray<RaycastMesh>(obj.models.size);
+    Array<SampleGroup> hemisphereSampleGroups = allocator->NewArray<SampleGroup>(NUM_HEMISPHERE_SAMPLE_GROUPS);
+    if (hemisphereSampleGroups.data == nullptr) {
+        LOG_ERROR("Failed to allocate hemisphere sample groups\n");
+        return false;
+    }
+    if (!GenerateHemisphereSampleGroups(hemisphereSampleGroups, allocator)) {
+        LOG_ERROR("Failed to generate hemisphere sample groups\n");
+        return false;
+    }
+
+
+    for (uint32 i = 0; i < geometry.meshes[meshInd].triangles.size; i++) {
+        const RaycastTriangle& t = geometry.meshes[meshInd].triangles[i];
+        for (int j = 0; j < 3; j++) {
+            const Vec3 raycastColor = RaycastColor(hemisphereSampleGroups, t.pos[j], t.outDir[j], geometry);
+            vertexColors[i * 3 + j] = raycastColor;
+        }
+    }
+
+    return true;
+}
+
+bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* queue, LinearAllocator* allocator,
+                       const_string lightmapDirPath)
+{
+    RaycastGeometry geometry = CreateRaycastGeometry(obj, allocator);
     if (geometry.meshes.data == nullptr) {
-        LOG_ERROR("Failed to allocate geometry meshes\n");
+        LOG_ERROR("Failed to construct raycast geometry from obj\n");
         return false;
     }
 
     uint32 totalTriangles = 0;
-    for (uint32 i = 0; i < obj.models.size; i++) {
-        RaycastMesh& mesh = geometry.meshes[i];
-        mesh.triangles = allocator->NewArray<RaycastTriangle>(obj.models[i].triangles.size);
-        if (mesh.triangles.data == nullptr) {
-            LOG_ERROR("Failed to allocate geometry mesh triangles for mesh %lu\n", i);
-            return false;
-        }
-
-        // Copy triangle geometry data
-        float32 surfaceArea = 0.0f;
-        for (uint32 j = 0; j < obj.models[i].triangles.size; j++) {
-            const Vertex v0 = obj.models[i].triangles[j].v[0];
-            const Vertex v1 = obj.models[i].triangles[j].v[1];
-            const Vertex v2 = obj.models[i].triangles[j].v[2];
-            RaycastTriangle& triangle = mesh.triangles[j];
-
-            triangle.pos[0] = v0.pos;
-            triangle.pos[1] = v1.pos;
-            triangle.pos[2] = v2.pos;
-            triangle.uvs[0] = v0.uv;
-            triangle.uvs[1] = v1.uv;
-            triangle.uvs[2] = v2.uv;
-            triangle.normal = v0.normal; // NOTE flat shading, all normals are the same
-
-            surfaceArea += TriangleArea(triangle.pos[0], triangle.pos[1], triangle.pos[2]);
-
-            totalTriangles++;
-        }
-
-        // Calculate AABB
-        mesh.min = Vec3::one * 1e8;
-        mesh.max = -Vec3::one * 1e8;
-        for (uint32 j = 0; j < mesh.triangles.size; j++) {
-            for (int k = 0; k < 3; k++) {
-                const Vec3 v = mesh.triangles[j].pos[k];
-                for (int e = 0; e < 3; e++) {
-                    mesh.min.e[e] = MinFloat32(mesh.min.e[e], v.e[e]);
-                    mesh.max.e[e] = MaxFloat32(mesh.max.e[e], v.e[e]);
-                }
-            }
-        }
-
-        // Allocate lightmap
-        const uint32 size = (uint32)(sqrt(surfaceArea) * RESOLUTION_PER_WORLD_UNIT);
-        const uint32 squareSize = RoundUpToPowerOfTwo(MinInt(size, 1024));
-        mesh.lightmap.squareSize = squareSize;
-        mesh.lightmap.pixels = allocator->New<uint32>(squareSize * squareSize);
-        if (mesh.lightmap.pixels == nullptr) {
-            LOG_ERROR("Failed to allocate %dx%d pixels for lightmap %lu\n", squareSize, squareSize, i);
-            return false;
-        }
-
-        MemSet(mesh.lightmap.pixels, 0, squareSize * squareSize * sizeof(uint32));
+    for (uint32 i = 0; i < geometry.meshes.size; i++) {
+        totalTriangles += geometry.meshes[i].triangles.size;
     }
 
     LOG_INFO("Generating lightmaps for %lu meshes, %lu total triangles, %lu bounces\n",
@@ -862,6 +946,12 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
             return false;
         }
 
+        Array<Array<Vec3>> meshVertexColors = allocator->NewArray<Array<Vec3>>(geometry.meshes.size);
+        if (meshVertexColors.data == nullptr) {
+            LOG_ERROR("Failed to allocate vertex color arrays in bounce %lu\n", b);
+            return false;
+        }
+
         for (uint32 i = 0; i < geometry.meshes.size; i++) {
             const uint32 squareSize = geometry.meshes[i].lightmap.squareSize;
             lightmaps[i].squareSize = squareSize,
@@ -871,6 +961,12 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
                 return false;
             }
             MemSet(lightmaps[i].pixels, 0, squareSize * squareSize * sizeof(uint32));
+
+            meshVertexColors[i] = allocator->NewArray<Vec3>(geometry.meshes[i].triangles.size * 3);
+            if (meshVertexColors[i].data == nullptr) {
+                LOG_ERROR("Failed to allocate vertex colors, bounce %lu, mesh %lu\n", b, i);
+                return false;
+            }
         }
 
 #if RESTRICT_LIGHTING
@@ -882,11 +978,37 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
             LOG_INFO("Lighting mesh %lu\n", i);
 
             ALLOCATOR_SCOPE_RESET(*allocator);
-            CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmaps[i]);
 
-            // Save calculated lightmap to file
-            const char* filePath = ToCString(AllocPrintf(allocator, pngPathFmt, i), allocator);
-            stbi_write_png(filePath, lightmaps[i].squareSize, lightmaps[i].squareSize, 4, lightmaps[i].pixels, 0);
+            // Calculate lightmap for mesh and save to file
+            if (!CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmaps[i])) {
+                LOG_ERROR("Failed to compute lightmap for mesh %lu, bounce %lu\n", i, b);
+                return false;
+            }
+            const char* lightmapFilePath = ToCString(AllocPrintf(allocator, "%.*s/%d.png",
+                                                                 lightmapDirPath.size, lightmapDirPath.data, i),
+                                                     allocator);
+            if (!stbi_write_png(lightmapFilePath, lightmaps[i].squareSize, lightmaps[i].squareSize, 4,
+                                lightmaps[i].pixels, 0)) {
+                LOG_ERROR("Failed to save lightmap file to %s for mesh %lu, bounce %lu\n",
+                          lightmapFilePath, i, b);
+                return false;
+            }
+
+            // Calculate vertex light for mesh and save to file
+            if (!LightMeshVertices(geometry, i, allocator, meshVertexColors[i])) {
+                LOG_ERROR("Failed to light vertices for mesh %lu, bounce %lu\n", i, b);
+                return false;
+            }
+            const Array<uint8> vertexColorData = {
+                .size = meshVertexColors[i].size * sizeof(Vec3),
+                .data = (uint8*)meshVertexColors[i].data
+            };
+            string verticesFilePath = AllocPrintf(allocator, "%.*s/%d.v", lightmapDirPath.size, lightmapDirPath.data, i);
+            if (!WriteFile(verticesFilePath, vertexColorData, false)) {
+                LOG_ERROR("Failed to write light vertices to %.*s for mesh %lu, bounce %lu\n",
+                          verticesFilePath.size, verticesFilePath.data, i, b);
+                return false;
+            }
         }
 
         if (b != bounces - 1) {

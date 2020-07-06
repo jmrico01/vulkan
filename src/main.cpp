@@ -22,6 +22,88 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(256);
 
+struct VulkanVertex
+{
+    Vec3 pos;
+    Vec3 normal;
+    Vec3 color;
+    Vec2 uv;
+};
+
+using VulkanTriangle = StaticArray<VulkanVertex, 3>;
+
+struct VulkanGeometry
+{
+    bool valid;
+    Array<uint32> meshEndInds;
+    Array<VulkanTriangle> triangles;
+};
+
+VulkanGeometry ObjToVulkanGeometry(const LoadObjResult& obj, LinearAllocator* allocator)
+{
+    VulkanGeometry geometry;
+    geometry.valid = false;
+    geometry.meshEndInds = allocator->NewArray<uint32>(obj.models.size);
+    if (geometry.meshEndInds.data == nullptr) {
+        return geometry;
+    }
+
+    uint32 totalTriangles = 0;
+    for (uint32 i = 0; i < obj.models.size; i++) {
+        totalTriangles += obj.models[i].triangles.size + obj.models[i].quads.size * 2;
+    }
+    geometry.triangles = allocator->NewArray<VulkanTriangle>(totalTriangles);
+    if (geometry.triangles.data == nullptr) {
+        return geometry;
+    }
+
+    const Vec3 vertexColor = Vec3::zero;
+
+    uint32 endInd = 0;
+    for (uint32 i = 0; i < obj.models.size; i++) {
+        for (uint32 j = 0; j < obj.models[i].triangles.size; j++) {
+            const ObjTriangle& t = obj.models[i].triangles[j];
+            const uint32 tInd = endInd + j;
+            const Vec3 normal = CalculateTriangleUnitNormal(t.v[0].pos, t.v[1].pos, t.v[2].pos);
+
+            for (int k = 0; k < 3; k++) {
+                geometry.triangles[tInd][k].pos = t.v[k].pos;
+                geometry.triangles[tInd][k].normal = normal;
+                geometry.triangles[tInd][k].color = vertexColor;
+                geometry.triangles[tInd][k].uv = t.v[k].uv;
+            }
+        }
+        endInd += obj.models[i].triangles.size;
+
+        for (uint32 j = 0; j < obj.models[i].quads.size; j++) {
+            const ObjQuad& q = obj.models[i].quads[j];
+            const uint32 tInd = endInd + j * 2;
+            const Vec3 normal = CalculateTriangleUnitNormal(q.v[0].pos, q.v[1].pos, q.v[2].pos);
+
+            for (int k = 0; k < 3; k++) {
+                geometry.triangles[tInd][k].pos = q.v[k].pos;
+                geometry.triangles[tInd][k].normal = normal;
+                geometry.triangles[tInd][k].color = vertexColor;
+                geometry.triangles[tInd][k].uv = q.v[k].uv;
+            }
+
+            for (int k = 0; k < 3; k++) {
+                const uint32 quadInd = (k + 2) % 4;
+                geometry.triangles[tInd + 1][k].pos = q.v[quadInd].pos;
+                geometry.triangles[tInd + 1][k].normal = normal;
+                geometry.triangles[tInd + 1][k].color = vertexColor;
+                geometry.triangles[tInd + 1][k].uv = q.v[quadInd].uv;
+            }
+        }
+        endInd += obj.models[i].quads.size * 2;
+
+        geometry.meshEndInds[i] = endInd;
+    }
+
+    geometry.valid = true;
+    return geometry;
+}
+
 struct UniformBufferObject
 {
     alignas(16) Mat4 model;
@@ -58,7 +140,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         LoadObjResult obj;
         if (LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
-            if (GenerateLightmaps(obj, LIGHTMAP_NUM_BOUNCES, queue, &allocator, "data/lightmaps/%llu.png")) {
+            if (GenerateLightmaps(obj, LIGHTMAP_NUM_BOUNCES, queue, &allocator, ToString("data/lightmaps"))) {
                 AppUnloadVulkanState(vulkanState, memory);
                 if (!AppLoadVulkanState(vulkanState, memory)) {
                     LOG_ERROR("Failed to reload Vulkan state after lightmap generation\n");
@@ -244,24 +326,29 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
         VkVertexInputBindingDescription bindingDescription = {};
         bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
+        bindingDescription.stride = sizeof(VulkanVertex);
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        VkVertexInputAttributeDescription attributeDescriptions[3] = {};
+        VkVertexInputAttributeDescription attributeDescriptions[4] = {};
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(Vertex, pos);
+        attributeDescriptions[0].offset = offsetof(VulkanVertex, pos);
 
         attributeDescriptions[1].binding = 0;
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(Vertex, normal);
+        attributeDescriptions[1].offset = offsetof(VulkanVertex, normal);
 
         attributeDescriptions[2].binding = 0;
         attributeDescriptions[2].location = 2;
-        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(Vertex, uv);
+        attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(VulkanVertex, color);
+
+        attributeDescriptions[3].binding = 0;
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(VulkanVertex, uv);
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
         vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -410,21 +497,27 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         }
     }
 
-    LoadObjResult obj;
-    if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
-        LOG_ERROR("Failed to load reference scene .obj\n");
-        return false;
+    // Load vulkan vertex geometry
+    VulkanGeometry geometry;
+    {
+        LoadObjResult obj;
+        if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
+            LOG_ERROR("Failed to load reference scene .obj\n");
+            return false;
+        }
+
+        geometry = ObjToVulkanGeometry(obj, &allocator);
+        if (!geometry.valid) {
+            LOG_ERROR("Failed to load Vulkan geometry from obj\n");
+            return false;
+        }
     }
 
     // Create vertex buffer
     // Depends on commandPool and graphicsQueue, which are created by swapchain,
-    // but doesn't really need to be recreated with the swapchain
+    // but doesn't really need to be recreated with the swapchain? maybe?
     {
-        uint32_t totalVertices = 0;
-        for (uint32 i = 0; i < obj.models.size; i++) {
-            totalVertices += (uint32_t)obj.models[i].triangles.size * 3;
-        }
-        VkDeviceSize vertexBufferSize = totalVertices * sizeof(Vertex);
+        const VkDeviceSize vertexBufferSize = geometry.triangles.size * 3 * sizeof(VulkanVertex);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -447,12 +540,9 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         // Copy vertex data from CPU into memory-mapped staging buffer
         void* data;
         vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-        uint64 offset = 0;
-        for (uint32 i = 0; i < obj.models.size; i++) {
-            const uint64 numBytes = obj.models[i].triangles.size * sizeof(MeshTriangle);
-            MemCopy((char*)data + offset, obj.models[i].triangles.data, numBytes);
-            offset += numBytes;
-        }
+
+        MemCopy(data, geometry.triangles.data, vertexBufferSize);
+
         vkUnmapMemory(window.device, stagingBufferMemory);
 
         // Copy vertex data from staging buffer into GPU vertex buffer
@@ -487,7 +577,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
         poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = (uint32_t)obj.models.size;
+        poolInfo.maxSets = geometry.meshEndInds.size;
 
         if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->descriptorPool) != VK_SUCCESS) {
             LOG_ERROR("vkCreateDescriptorPool failed\n");
@@ -523,7 +613,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
 
     // Create lightmaps
     {
-        for (uint32 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
             const char* filePath = ToCString(AllocPrintf(&allocator, "data/lightmaps/%llu.png", i), &allocator);
             int width, height, channels;
             unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
@@ -584,23 +674,23 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
     {
         FixedArray<VkDescriptorSetLayout, VulkanAppState::MAX_LIGHTMAPS> layouts;
         layouts.Clear();
-        for (uint32 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
             layouts.Append(app->descriptorSetLayout);
         }
 
         VkDescriptorSetAllocateInfo allocInfo = {};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = app->descriptorPool;
-        allocInfo.descriptorSetCount = (uint32_t)obj.models.size;
+        allocInfo.descriptorSetCount = geometry.meshEndInds.size;
         allocInfo.pSetLayouts = layouts.data;
 
         if (vkAllocateDescriptorSets(window.device, &allocInfo, app->descriptorSets.data) != VK_SUCCESS) {
             LOG_ERROR("vkAllocateDescriptorSets failed\n");
             return false;
         }
-        app->descriptorSets.size = obj.models.size;
+        app->descriptorSets.size = geometry.meshEndInds.size;
 
-        for (uint32 i = 0; i < obj.models.size; i++) {
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
             VkDescriptorBufferInfo bufferInfo = {};
             bufferInfo.buffer = app->uniformBuffer;
             bufferInfo.offset = 0;
@@ -682,14 +772,19 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             const VkDeviceSize offsets[] = { 0 };
             vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
-            uint32_t vertexStart = 0;
-            for (uint32 j = 0; j < obj.models.size; j++) {
+            for (uint32 j = 0; j < geometry.meshEndInds.size; j++) {
                 vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->pipelineLayout, 0, 1,
                                         &app->descriptorSets[j], 0, nullptr);
 
-                uint32_t numVertices = (uint32_t)obj.models[j].triangles.size * 3;
-                vkCmdDraw(buffer, numVertices, 1, vertexStart, 0);
-                vertexStart += numVertices;
+                uint32 startTriangleInd;
+                if (j != 0) {
+                    startTriangleInd = geometry.meshEndInds[j - 1];
+                }
+                else {
+                    startTriangleInd = 0;
+                }
+                const uint32 numTriangles = geometry.meshEndInds[j] - startTriangleInd;
+                vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
             }
 
             vkCmdEndRenderPass(buffer);

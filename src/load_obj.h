@@ -5,21 +5,26 @@
 #include <km_common/km_memory.h>
 #include <km_common/km_string.h>
 
-struct Vertex
+struct ObjVertex
 {
     Vec3 pos;
-    Vec3 normal;
     Vec2 uv;
 };
 
-struct MeshTriangle
+struct ObjTriangle
 {
-    Vertex v[3];
+    ObjVertex v[3];
+};
+
+struct ObjQuad
+{
+    ObjVertex v[4];
 };
 
 struct ObjModel
 {
-    Array<MeshTriangle> triangles;
+    Array<ObjTriangle> triangles;
+    Array<ObjQuad> quads;
 };
 
 struct LoadObjResult
