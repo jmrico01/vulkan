@@ -4,23 +4,22 @@
 layout(location = 0) in vec3 inNormal;
 layout(location = 1) in vec3 inColor;
 layout(location = 2) in vec2 inUv;
+layout(location = 3) in float inLightmapWeight;
 
 layout(location = 0) out vec4 outColor;
 
-layout(binding = 1) uniform sampler2D texSampler;
+layout(binding = 1) uniform sampler2D lightmapSampler;
 
-void main() {
-	vec3 colorAmbient = vec3(0.05f, 0.05f, 0.05f);
-	vec3 colorLight = vec3(0.9f, 0.9f, 0.9f);
-	vec3 lightDir = normalize(vec3(0.2f, 0.3f, 1.0f));
+vec3 lerp(vec3 a, vec3 b, float t)
+{
+	return a * (1.0 - t) + b * t;
+}
 
-	float lightBounce = max(dot(-lightDir, inNormal), 0.0);
-	vec3 texColor = texture(texSampler, inUv).rgb;
+void main()
+{
+	vec3 colorAmbient = vec3(0.0, 0.0, 0.0);
+	vec3 colorLightmap = texture(lightmapSampler, inUv).rgb;
+    vec3 colorFinal = colorAmbient + lerp(inColor, colorLightmap, inLightmapWeight);
 
-	vec3 finalColor = (colorAmbient + colorLight * lightBounce) * texColor;
-
-    // outColor = vec4(finalColor, 1.0);
-	vec3 vertexColor = inColor;
-	vec3 lightmapColor = texture(texSampler, inUv).rgb;
-	outColor = vec4(vertexColor, 1.0);
+	outColor = vec4(colorFinal, 1.0);
 }

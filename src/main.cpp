@@ -28,6 +28,7 @@ struct VulkanVertex
     Vec3 normal;
     Vec3 color;
     Vec2 uv;
+    float32 lightmapWeight;
 };
 
 using VulkanTriangle = StaticArray<VulkanVertex, 3>;
@@ -329,7 +330,7 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         bindingDescription.stride = sizeof(VulkanVertex);
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        VkVertexInputAttributeDescription attributeDescriptions[4] = {};
+        VkVertexInputAttributeDescription attributeDescriptions[5] = {};
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -349,6 +350,11 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         attributeDescriptions[3].location = 3;
         attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
         attributeDescriptions[3].offset = offsetof(VulkanVertex, uv);
+
+        attributeDescriptions[4].binding = 0;
+        attributeDescriptions[4].location = 4;
+        attributeDescriptions[4].format = VK_FORMAT_R32_SFLOAT;
+        attributeDescriptions[4].offset = offsetof(VulkanVertex, lightmapWeight);
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
         vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -512,6 +518,17 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
             return false;
         }
 
+        // Set per-vertex lightmap weights based on triangle areas
+        for (uint32 i = 0; i < geometry.triangles.size; i++) {
+            VulkanTriangle& t = geometry.triangles[i];
+            const float32 area = TriangleArea(t[0].pos, t[1].pos, t[2].pos);
+            const float32 weight = ClampFloat32(SmoothStep(0.005f, 0.05f, area), 0.0f, 1.0f);
+            for (int j = 0; j < 3; j++) {
+                t[j].lightmapWeight = weight;
+            }
+        }
+
+        // Load vertex colors from lightmap data
         uint32 startInd = 0;
         for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
             const_string filePath = AllocPrintf(&allocator, "data/lightmaps/%llu.v", i);

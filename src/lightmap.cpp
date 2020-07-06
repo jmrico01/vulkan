@@ -541,7 +541,6 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
     // NOTE this will do unknown-ish things with "up" direction
     const Quat xToNormalRot = QuatRotBetweenVectors(Vec3::unitX, normal);
-    const Vec3 ambient = { 0.05f, 0.05f, 0.05f };
 
     const float32 largeFloat = 1e8;
     const __m256 largeFloat8 = _mm256_set1_ps(largeFloat);
@@ -554,7 +553,7 @@ internal Vec3 RaycastColor(Array<SampleGroup> sampleGroups, Vec3 pos, Vec3 norma
 
     static_assert(SAMPLES_PER_GROUP == 8);
 
-    Vec3 outputColor = ambient;
+    Vec3 outputColor = Vec3::zero;
     for (uint32 m = 0; m < sampleGroups.size; m++) {
         const Vec3_8 sample8 = SetVec3_8(sampleGroups[m].group);
         const Vec3_8 sampleNormal8 = Multiply_8(xToNormalRot8, sample8);
