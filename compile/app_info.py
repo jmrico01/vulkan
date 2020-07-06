@@ -4,32 +4,56 @@ import subprocess
 from compile import Platform, TargetType, Define, PlatformTargetOptions, BuildTarget, CopyDir, LibExternal
 from env_settings import WIN32_VCVARSALL, WIN32_VULKAN_PATH
 
-TARGETS = [
-    BuildTarget("vulkan",
-        source_file="src/main.cpp",
-        type=TargetType.EXECUTABLE,
-        defines=[],
-        platform_options={
-            Platform.WINDOWS: PlatformTargetOptions(
-                defines=[],
-                compiler_flags=[
-                    # "-GS-",       # Disable stack security cookie for CRT removal
-                    # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
+TARGET_APP = BuildTarget("vulkan",
+    source_file="src/main.cpp",
+    type=TargetType.EXECUTABLE,
+    defines=[],
+    platform_options={
+        Platform.WINDOWS: PlatformTargetOptions(
+            defines=[],
+            compiler_flags=[
+                # "-GS-",       # Disable stack security cookie for CRT removal
+                # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
 
-                    "-wd4201",    # nonstandard extension used: nameless struct/union
-                    "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # HACK
-                ],
-                linker_flags=[
-                    "-LIBPATH:\"" + WIN32_VULKAN_PATH + "\\Lib\"", # HACK
-                    "user32.lib",
-                    "vulkan-1.lib",
-                    # "-subsystem:windows",      # Windows application (no console)
-                    # "-nodefaultlib",           # No sneaky CRT or kernel32.lib
-                    # "-STACK:0x100000,0x100000" # Allocate and commit 1MB for main thread's stack
-                ]
-            )
-        }
-    )
+                "-wd4201",    # nonstandard extension used: nameless struct/union
+                "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # HACK
+            ],
+            linker_flags=[
+                "-LIBPATH:\"" + WIN32_VULKAN_PATH + "\\Lib\"", # HACK
+                "user32.lib",
+                "vulkan-1.lib",
+                # "-subsystem:windows",      # Windows application (no console)
+                # "-nodefaultlib",           # No sneaky CRT or kernel32.lib
+                # "-STACK:0x100000,0x100000" # Allocate and commit 1MB for main thread's stack
+            ]
+        )
+    }
+)
+
+TARGET_BENCHMARK = BuildTarget("lightmap_benchmark",
+    source_file="src/lightmap_benchmark.cpp",
+    type=TargetType.EXECUTABLE,
+    defines=[],
+    platform_options={
+        Platform.WINDOWS: PlatformTargetOptions(
+            defines=[],
+            compiler_flags=[
+                "-wd4201",    # nonstandard extension used: nameless struct/union
+                "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # HACK
+            ],
+            linker_flags=[
+                "-SUBSYSTEM:CONSOLE",
+                "-LIBPATH:\"" + WIN32_VULKAN_PATH + "\\Lib\"", # HACK
+                "user32.lib",
+                "vulkan-1.lib",
+            ]
+        )
+    }
+)
+
+TARGETS = [
+    TARGET_APP,
+    # TARGET_BENCHMARK
 ]
 
 COPY_DIRS = [

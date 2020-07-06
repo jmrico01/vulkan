@@ -58,6 +58,13 @@ command_list = {
 	},
 },
 {
+	.name = "one-off",
+	.out = "*run*", .footer_panel = true, .save_dirty_files = false, .cursor_at_end = false,
+	.cmd = {
+		{".\build\lightmap_benchmark_win32.exe", .os = "win"}
+	},
+},
+{
 	.name = "remedybg",
 	.out = "*remedybg*", .footer_panel = true, .save_dirty_files = false, .cursor_at_end = false,
 	.cmd = {
@@ -78,6 +85,7 @@ fkey_command[4] = "build-debug";
 fkey_command[5] = "run-ifchanged";
 fkey_command[6] = "build-internal";
 
+fkey_command[7] = "one-off";
 fkey_command[8] = "remedybg";
 fkey_command[9] = "terminal";
 

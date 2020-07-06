@@ -62,7 +62,7 @@ internal void GetSwapchainSupportInfo(VkSurfaceKHR surface, VkPhysicalDevice phy
 
 internal VkSurfaceFormatKHR ChooseSwapSurfaceFormat(const Array<VkSurfaceFormatKHR>& availableFormats)
 {
-    for (uint64 i = 0; i < availableFormats.size; i++) {
+    for (uint32 i = 0; i < availableFormats.size; i++) {
         if (availableFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
             availableFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             return availableFormats[i];
@@ -113,11 +113,11 @@ internal bool IsPhysicalDeviceSuitable(VkSurfaceKHR surface, VkPhysicalDevice ph
         return false;
     }
 
-    for (uint64 i = 0; i < requiredExtensions.size; i++) {
+    for (uint32 i = 0; i < requiredExtensions.size; i++) {
         const_string requiredExtension = ToString(requiredExtensions[i]);
 
         bool found = false;
-        for (uint64 j = 0; j < extensions.size; j++) {
+        for (uint32 j = 0; j < extensions.size; j++) {
             const_string extensionName = ToString(extensions[j].extensionName);
             if (StringEquals(requiredExtension, extensionName)) {
                 found = true;
@@ -134,7 +134,7 @@ internal bool IsPhysicalDeviceSuitable(VkSurfaceKHR surface, VkPhysicalDevice ph
     SwapchainSupportInfo swapchainSupport;
     GetSwapchainSupportInfo(surface, physicalDevice, &swapchainSupport);
     if (swapchainSupport.formats.size == 0 || swapchainSupport.presentModes.size == 0) {
-        LOG_ERROR("Insufficient swap chain capabilities (%llu formats, %llu presentModes)\n",
+        LOG_ERROR("Insufficient swap chain capabilities (%lu formats, %lu presentModes)\n",
                   swapchainSupport.formats.size, swapchainSupport.presentModes.size);
         return false;
     }
@@ -189,7 +189,7 @@ QueueFamilyInfo GetQueueFamilyInfo(VkSurfaceKHR surface, VkPhysicalDevice physic
     queueFamilies.size = queueFamilyCount;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data);
 
-    for (uint64 i = 0; i < queueFamilies.size; i++) {
+    for (uint32 i = 0; i < queueFamilies.size; i++) {
         VkBool32 presentSupport = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, (uint32_t)i, surface, &presentSupport);
         if (presentSupport) {
@@ -489,10 +489,10 @@ bool LoadVulkanSwapchain(const VulkanWindow& window, Vec2Int size, VulkanSwapcha
         vkGetSwapchainImagesKHR(window.device, swapchain->swapchain, &imageCount, swapchain->images.data);
 
         swapchain->imageViews.size = imageCount;
-        for (uint64 i = 0; i < swapchain->images.size; i++) {
+        for (uint32 i = 0; i < swapchain->images.size; i++) {
             if (!CreateImageView(window.device, swapchain->images[i], surfaceFormat.format,VK_IMAGE_ASPECT_COLOR_BIT,
                                  &swapchain->imageViews[i])) {
-                LOG_ERROR("CreateImageView failed for image %llu\n", i);
+                LOG_ERROR("CreateImageView failed for image %lu\n", i);
                 return false;
             }
         }
@@ -579,7 +579,7 @@ bool LoadVulkanSwapchain(const VulkanWindow& window, Vec2Int size, VulkanSwapcha
     // Create framebuffers
     {
         swapchain->framebuffers.size = swapchain->imageViews.size;
-        for (uint64 i = 0; i < swapchain->framebuffers.size; i++) {
+        for (uint32 i = 0; i < swapchain->framebuffers.size; i++) {
             VkImageView attachments[] = {
                 swapchain->imageViews[i],
                 swapchain->depthImageView
@@ -596,7 +596,7 @@ bool LoadVulkanSwapchain(const VulkanWindow& window, Vec2Int size, VulkanSwapcha
 
             if (vkCreateFramebuffer(window.device, &framebufferCreateInfo, nullptr,
                                     &swapchain->framebuffers[i]) != VK_SUCCESS) {
-                LOG_ERROR("vkCreateFramebuffer failed for framebuffer %llu\n", i);
+                LOG_ERROR("vkCreateFramebuffer failed for framebuffer %lu\n", i);
                 return false;
             }
         }
@@ -607,7 +607,7 @@ bool LoadVulkanSwapchain(const VulkanWindow& window, Vec2Int size, VulkanSwapcha
 
 void UnloadVulkanSwapchain(const VulkanWindow& window, VulkanSwapchain* swapchain)
 {
-    for (uint64 i = 0; i < swapchain->framebuffers.size; i++) {
+    for (uint32 i = 0; i < swapchain->framebuffers.size; i++) {
         vkDestroyFramebuffer(window.device, swapchain->framebuffers[i], nullptr);
     }
 
@@ -617,7 +617,7 @@ void UnloadVulkanSwapchain(const VulkanWindow& window, VulkanSwapchain* swapchai
 
     vkDestroyRenderPass(window.device, swapchain->renderPass, nullptr);
 
-    for (uint64 i = 0; i < swapchain->imageViews.size; i++) {
+    for (uint32 i = 0; i < swapchain->imageViews.size; i++) {
         vkDestroyImageView(window.device, swapchain->imageViews[i], nullptr);
     }
     vkDestroySwapchainKHR(window.device, swapchain->swapchain, nullptr);
@@ -661,7 +661,7 @@ bool LoadVulkanWindow(const VulkanCore& core, HINSTANCE hInstance, HWND hWnd, Vu
         vkEnumeratePhysicalDevices(core.instance, &deviceCount, devices.data);
 
         window->physicalDevice = VK_NULL_HANDLE;
-        for (uint64 i = 0; i < devices.size; i++) {
+        for (uint32 i = 0; i < devices.size; i++) {
             if (IsPhysicalDeviceSuitable(window->surface, devices[i], requiredDeviceExtensionsArray, allocator)) {
                 window->physicalDevice = devices[i];
                 break;
@@ -773,7 +773,7 @@ bool LoadVulkanCore(VulkanCore* core, LinearAllocator* allocator)
             const_string requiredLayer = ToString(REQUIRED_LAYERS[i]);
 
             bool found = false;
-            for (uint64 j = 0; j < layers.size; j++) {
+            for (uint32 j = 0; j < layers.size; j++) {
                 const_string layerName = ToString(layers[j].layerName);
                 if (StringEquals(requiredLayer, layerName)) {
                     found = true;
@@ -806,7 +806,7 @@ bool LoadVulkanCore(VulkanCore* core, LinearAllocator* allocator)
             const_string requiredExtension = ToString(REQUIRED_EXTENSIONS[i]);
 
             bool found = false;
-            for (uint64 j = 0; j < extensions.size; j++) {
+            for (uint32 j = 0; j < extensions.size; j++) {
                 const_string extensionName = ToString(extensions[j].extensionName);
                 if (StringEquals(requiredExtension, extensionName)) {
                     found = true;

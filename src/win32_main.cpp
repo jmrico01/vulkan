@@ -1,5 +1,7 @@
 #include <Windows.h>
 
+#include <intrin.h>
+
 #include <km_common/km_input.h>
 
 #include "app_main.h"
@@ -9,6 +11,67 @@ bool running_ = false;
 bool windowSizeChange_ = false;
 AppInput* input_ = nullptr;
 global_var WINDOWPLACEMENT windowPlacementPrev_ = { sizeof(windowPlacementPrev_) };
+
+bool TryDoNextWorkEntry(AppWorkQueue* queue)
+{
+    const uint32 read = queue->read;
+    if (read == queue->write) {
+        return false;
+    }
+
+    const uint32 newRead = (read + 1) % C_ARRAY_LENGTH(queue->entries);
+    const uint32 index = InterlockedCompareExchange((LONG volatile *)&queue->read, newRead, read);
+    if (index == read) {
+        AppWorkEntry entry = queue->entries[index];
+        entry.callback(queue, entry.data);
+        InterlockedIncrement((LONG volatile*)&queue->entriesComplete);
+    }
+
+    return true;
+}
+
+DWORD WINAPI WorkerThreadProc(_In_ LPVOID lpParameter)
+{
+    AppWorkQueue* queue = (AppWorkQueue*)lpParameter;
+    while (true) {
+        if (!TryDoNextWorkEntry(queue)) {
+            WaitForSingleObjectEx(queue->win32SemaphoreHandle, INFINITE, FALSE);
+        }
+    }
+
+    return 0;
+}
+
+void CompleteAllWork(AppWorkQueue* queue)
+{
+    while (queue->entriesComplete != queue->entriesTotal) {
+        TryDoNextWorkEntry(queue);
+    }
+
+    queue->entriesTotal = 0;
+    queue->entriesComplete = 0;
+}
+
+bool TryAddWork(AppWorkQueue* queue, AppWorkQueueCallbackFunction* callback, void* data)
+{
+    const uint32 write = queue->write;
+    const uint32 nextWrite = (write + 1) % C_ARRAY_LENGTH(queue->entries);
+    if (nextWrite == queue->read) {
+        return false;
+    }
+
+    AppWorkEntry* newEntry = &queue->entries[write];
+    newEntry->callback = callback;
+    newEntry->data = data;
+    ++queue->entriesTotal;
+
+    _WriteBarrier();
+
+    queue->write = nextWrite;
+    ReleaseSemaphore(queue->win32SemaphoreHandle, 1, NULL);
+
+    return true;
+}
 
 KmKeyCode Win32KeyCodeToKm(int vkCode)
 {
@@ -323,7 +386,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 #endif
 
     // Initialize app memory
-    Array<uint8> totalMemory;
+    LargeArray<uint8> totalMemory;
     totalMemory.size = PERMANENT_MEMORY_SIZE + TRANSIENT_MEMORY_SIZE;
     totalMemory.data = (uint8*)VirtualAlloc(baseAddress, totalMemory.size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!totalMemory.data) {
@@ -355,7 +418,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             return 1;
         }
     }
-    LOG_INFO("Loaded Vulkan state, %llu swapchain images\n", vulkanState.swapchain.images.size);
+    LOG_INFO("Loaded Vulkan state, %lu swapchain images\n", vulkanState.swapchain.images.size);
 
     if (!AppLoadVulkanState(vulkanState, &appMemory)) {
         LOG_ERROR("AppLoadVulkanState failed\n");
@@ -369,6 +432,46 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     AppInput input[2] = {};
     AppInput *newInput = &input[0];
     AppInput *oldInput = &input[1];
+
+    // Initialize app work queue
+    AppWorkQueue appWorkQueue;
+    const int MAX_THREADS = 256;
+    FixedArray<HANDLE, MAX_THREADS> threadHandles;
+    {
+        appWorkQueue.entriesTotal = 0;
+        appWorkQueue.entriesComplete = 0;
+        appWorkQueue.read = 0;
+        appWorkQueue.write = 0;
+        appWorkQueue.win32SemaphoreHandle = CreateSemaphoreEx(NULL, 0, C_ARRAY_LENGTH(appWorkQueue.entries),
+                                                              NULL, 0, SEMAPHORE_ALL_ACCESS);
+        if (appWorkQueue.win32SemaphoreHandle == NULL) {
+            LOG_ERROR("Failed to create AppWorkQueue semaphore\n");
+            LOG_FLUSH();
+            return 1;
+        }
+
+        SYSTEM_INFO systemInfo;
+        GetSystemInfo(&systemInfo);
+        int numThreads = systemInfo.dwNumberOfProcessors - 1;
+        if (numThreads > MAX_THREADS) {
+            LOG_INFO("Whoa, hello future! Machine has too many processors: %d, clamping to %d\n",
+                     systemInfo.dwNumberOfProcessors, MAX_THREADS);
+            numThreads = MAX_THREADS;
+        }
+#if !ENABLE_THREADS
+        numThreads = 0;
+#endif
+        for (int i = 0; i < numThreads; i++) {
+            HANDLE* handle = threadHandles.Append();
+            *handle = CreateThread(NULL, 0, WorkerThreadProc, &appWorkQueue, 0, NULL);
+            if (*handle == NULL) {
+                LOG_ERROR("Failed to create worker thread\n");
+                LOG_FLUSH();
+                return 1;
+            }
+        }
+        LOG_INFO("Loaded work queue, %d threads\n", numThreads);
+    }
 
     // Initialize timing information
     int64 timerFreq;
@@ -449,7 +552,8 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             LOG_ERROR("Failed to acquire swapchain image\n");
         }
 
-        bool shouldRender = AppUpdateAndRender(vulkanState, imageIndex, *newInput, lastElapsed, &appMemory, &appAudio);
+        bool shouldRender = AppUpdateAndRender(vulkanState, imageIndex, *newInput, lastElapsed,
+                                               &appMemory, &appAudio, &appWorkQueue);
         if (!shouldRender) {
             // TODO lmao, plz fix... how do we cancel the frame cleanly?
             continue;
