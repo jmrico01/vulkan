@@ -7,12 +7,12 @@
 
 #include <km_common/km_array.h>
 #include <km_common/km_defines.h>
+#include <km_common/km_load_obj.h>
 #include <km_common/km_os.h>
 #include <km_common/km_string.h>
 
 #include "app_main.h"
 #include "lightmap.h"
-#include "load_obj.h"
 
 #define ENABLE_THREADS 1
 
@@ -522,9 +522,9 @@ APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState)
         for (uint32 i = 0; i < geometry.triangles.size; i++) {
             VulkanTriangle& t = geometry.triangles[i];
             const float32 area = TriangleArea(t[0].pos, t[1].pos, t[2].pos);
-            const float32 weight = ClampFloat32(SmoothStep(0.005f, 0.05f, area), 0.0f, 1.0f);
+            const float32 weight = ClampFloat32(SmoothStep(0.0f, 0.005f, area), 0.0f, 1.0f);
             for (int j = 0; j < 3; j++) {
-                t[j].lightmapWeight = weight;
+                t[j].lightmapWeight = 1.0f;
             }
         }
 
@@ -882,7 +882,6 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 }
 
 #include "lightmap.cpp"
-#include "load_obj.cpp"
 #include "vulkan.cpp"
 
 #if GAME_WIN32
@@ -894,6 +893,7 @@ APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState)
 #include <km_common/km_array.cpp>
 #include <km_common/km_container.cpp>
 #include <km_common/km_input.cpp>
+#include <km_common/km_load_obj.cpp>
 #include <km_common/km_memory.cpp>
 #include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>

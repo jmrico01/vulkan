@@ -3,10 +3,9 @@
 #include <stb_image.h>
 
 #include <km_common/km_container.h>
+#include <km_common/km_load_obj.h>
 #include <km_common/km_os.h>
 #include <km_common/km_string.h>
-
-#include "load_obj.h"
 
 const char* REQUIRED_LAYERS[] = {
     "VK_LAYER_KHRONOS_validation"

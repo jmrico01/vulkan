@@ -1,9 +1,9 @@
 #pragma once
 
+#include <km_common/km_load_obj.h>
 #include <km_common/km_memory.h>
 
 #include "app_main.h"
-#include "load_obj.h"
 
 // MODEL INDICES:
 // 0, 1, 2 - some rocks
@@ -15,13 +15,13 @@
 
 #define RESTRICT_LIGHTING 1
 const int MODELS_TO_LIGHT[] = {
-    3, 7
+    3
 };
 
 #define RESTRICT_OCCLUSION 0
 #define MODEL_TO_OCCLUDE 3
 
-#define RESTRICT_WALL 0
+#define RESTRICT_WALL 1
 const uint64 PLANE_LEFT  = 0;
 const uint64 PLANE_BACK  = 1;
 const uint64 PLANE_RIGHT = 2;

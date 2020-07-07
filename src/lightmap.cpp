@@ -762,6 +762,7 @@ void ThreadLightmapRasterizeRow(AppWorkQueue* queue, void* data)
                          workData->common->hemisphereSampleGroups, workData->common->lightmap);
 }
 
+#if 0
 internal bool CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 meshInd, AppWorkQueue* queue,
                                        LinearAllocator* allocator, Lightmap* lightmap)
 {
@@ -868,6 +869,7 @@ internal bool CalculateLightmapForMesh(const RaycastGeometry& geometry, uint32 m
 
     return true;
 }
+#endif
 
 bool LightMeshVertices(const RaycastGeometry& geometry, uint32 meshInd, LinearAllocator* allocator,
                        Array<Vec3> vertexColors)
@@ -959,6 +961,8 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
 
             ALLOCATOR_SCOPE_RESET(*allocator);
 
+            UNREFERENCED_PARAMETER(queue);
+#if 0
             // Calculate lightmap for mesh and save to file
             if (!CalculateLightmapForMesh(geometry, i, queue, allocator, &lightmaps[i])) {
                 LOG_ERROR("Failed to compute lightmap for mesh %lu, bounce %lu\n", i, b);
@@ -973,6 +977,7 @@ bool GenerateLightmaps(const LoadObjResult& obj, uint32 bounces, AppWorkQueue* q
                           lightmapFilePath, i, b);
                 return false;
             }
+#endif
 
             // Calculate vertex light for mesh and save to file
             if (!LightMeshVertices(geometry, i, allocator, meshVertexColors[i])) {

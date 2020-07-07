@@ -118,12 +118,12 @@ int main(int argc, char* argv[])
 }
 
 #include "lightmap.cpp"
-#include "load_obj.cpp"
 #include "vulkan.cpp"
 
 #include <km_common/km_array.cpp>
 #include <km_common/km_container.cpp>
 #include <km_common/km_input.cpp>
+#include <km_common/km_load_obj.cpp>
 #include <km_common/km_memory.cpp>
 #include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>
