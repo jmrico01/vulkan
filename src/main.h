@@ -11,6 +11,7 @@
 
 #include "vulkan.h"
 
+// TODO move this to vulkan libs?
 struct VulkanImage
 {
     VkImage image;
@@ -20,24 +21,32 @@ struct VulkanImage
 
 struct VulkanAppState
 {
-    VkDescriptorSetLayout descriptorSetLayout;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline graphicsPipeline;
-
     VkCommandPool commandPool;
-    FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
-
-    static const uint64 MAX_LIGHTMAPS = 64;
-    FixedArray<VulkanImage, MAX_LIGHTMAPS> lightmaps;
     VkSampler textureSampler;
 
+    // 2D sprite pipeline
+    // VkPipelineLayout pipelineLayout;
+    // VkPipeline g
+
+    // 3D mesh pipeline
+    static const uint32 MAX_MESHES = 64;
+    FixedArray<uint32, MAX_MESHES> meshTriangleEndInds;
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
+
+    static const uint32 MAX_LIGHTMAPS = 64;
+    FixedArray<VulkanImage, MAX_LIGHTMAPS> lightmaps;
+
     VkBuffer uniformBuffer;
     VkDeviceMemory uniformBufferMemory;
 
+    VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
     FixedArray<VkDescriptorSet, MAX_LIGHTMAPS> descriptorSets;
+
+    VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
+    FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
 };
 
 struct AppState

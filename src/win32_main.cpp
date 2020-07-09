@@ -8,7 +8,8 @@
 #include "vulkan.h"
 
 bool running_ = false;
-bool windowSizeChange_ = false;
+bool windowPropertiesChanged_ = false;
+bool windowSizeChanged_ = false;
 AppInput* input_ = nullptr;
 global_var WINDOWPLACEMENT windowPlacementPrev_ = { sizeof(windowPlacementPrev_) };
 
@@ -180,8 +181,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         } break;
 
         case WM_SIZE: {
-            // TODO is it ok to ignore this?d
-            // windowSizeChange_ = true;
+            // TODO this is triggering once on app startup.
+            // should I check if size actually changed before actioning on this?
+            windowSizeChanged_ = true;
         } break;
 
         case WM_SYSKEYDOWN: {
@@ -244,7 +246,8 @@ internal void Win32ProcessMessages(HWND hWnd, AppInput* input)
 
                 if (vkCode == VK_F11) {
                     Win32ToggleFullscreen(hWnd);
-                    windowSizeChange_ = true;
+                    windowPropertiesChanged_ = true;
+                    windowSizeChanged_ = true;
                 }
 
                 // Pass over to WndProc for WM_CHAR messages (string input)
@@ -420,8 +423,13 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
     LOG_INFO("Loaded Vulkan state, %lu swapchain images\n", vulkanState.swapchain.images.size);
 
-    if (!AppLoadVulkanState(vulkanState, &appMemory)) {
-        LOG_ERROR("AppLoadVulkanState failed\n");
+    if (!AppLoadVulkanWindowState(vulkanState, &appMemory)) {
+        LOG_ERROR("AppLoadVulkanWindowState failed\n");
+        LOG_FLUSH();
+        return 1;
+    }
+    if (!AppLoadVulkanSwapchainState(vulkanState, &appMemory)) {
+        LOG_ERROR("AppLoadVulkanSwapchainState failed\n");
         LOG_FLUSH();
         return 1;
     }
@@ -493,20 +501,35 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         Win32ProcessMessages(hWnd, newInput);
         newInput->mouseWheelDelta = newInput->mouseWheel - mouseWheelPrev;
 
-        if (windowSizeChange_) {
-            windowSizeChange_ = false;
+        if (windowPropertiesChanged_ || windowSizeChanged_) {
             // TODO duplicate from vkAcquireNextImageKHR out of date case
             Vec2Int newSize = Win32GetRenderingViewportSize(hWnd);
             LinearAllocator tempAllocator(appMemory.transient);
 
             vkDeviceWaitIdle(vulkanState.window.device);
-            AppUnloadVulkanState(vulkanState, &appMemory);
-            if (!ReloadVulkanWindow(&vulkanState, hInstance, hWnd, newSize, &tempAllocator)) {
-                DEBUG_PANIC("Failed to reload Vulkan window\n");
+            AppUnloadVulkanSwapchainState(vulkanState, &appMemory);
+
+            if (windowPropertiesChanged_) {
+                AppUnloadVulkanWindowState(vulkanState, &appMemory);
+                if (!ReloadVulkanWindow(&vulkanState, hInstance, hWnd, newSize, &tempAllocator)) {
+                    DEBUG_PANIC("Failed to reload Vulkan window\n");
+                }
+                if (!AppLoadVulkanWindowState(vulkanState, &appMemory)) {
+                    DEBUG_PANIC("Failed to reload Vulkan window-dependent app state\n");
+                }
             }
-            if (!AppLoadVulkanState(vulkanState, &appMemory)) {
-                DEBUG_PANIC("Failed to reload Vulkan app state\n");
+            else {
+                if (!ReloadVulkanSwapchain(&vulkanState, newSize, &tempAllocator)) {
+                    DEBUG_PANIC("Failed to reload Vulkan swapchain\n");
+                }
             }
+
+            if (!AppLoadVulkanSwapchainState(vulkanState, &appMemory)) {
+                DEBUG_PANIC("Failed to reload Vulkan swapchain-dependent app state\n");
+            }
+
+            windowPropertiesChanged_ = false;
+            windowSizeChanged_ = false;
             continue;
         }
 
@@ -539,12 +562,12 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             LinearAllocator tempAllocator(appMemory.transient);
 
             vkDeviceWaitIdle(vulkanState.window.device);
-            AppUnloadVulkanState(vulkanState, &appMemory);
+            AppUnloadVulkanSwapchainState(vulkanState, &appMemory);
             if (!ReloadVulkanWindow(&vulkanState, hInstance, hWnd, newSize, &tempAllocator)) {
                 DEBUG_PANIC("Failed to reload Vulkan window\n");
             }
-            if (!AppLoadVulkanState(vulkanState, &appMemory)) {
-                DEBUG_PANIC("Failed to reload Vulkan app\n");
+            if (!AppLoadVulkanSwapchainState(vulkanState, &appMemory)) {
+                DEBUG_PANIC("Failed to reload Vulkan swapchain-dependent app state\n");
             }
             continue;
         }
@@ -601,7 +624,8 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     vkDeviceWaitIdle(vulkanState.window.device);
-    AppUnloadVulkanState(vulkanState, &appMemory);
+    AppUnloadVulkanSwapchainState(vulkanState, &appMemory);
+    AppUnloadVulkanWindowState(vulkanState, &appMemory);
     UnloadVulkanState(&vulkanState);
 
     return 0;

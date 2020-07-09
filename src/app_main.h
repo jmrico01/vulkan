@@ -50,10 +50,18 @@ typedef APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRenderFunction);
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender);
 
-#define APP_LOAD_VULKAN_STATE_FUNCTION(name) bool name(const VulkanState& vulkanState, AppMemory* memory)
-typedef APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanStateFunction);
-APP_LOAD_VULKAN_STATE_FUNCTION(AppLoadVulkanState);
+#define APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(name) bool name(const VulkanState& vulkanState, AppMemory* memory)
+typedef APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowStateFunction);
+APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState);
 
-#define APP_UNLOAD_VULKAN_STATE_FUNCTION(name) void name(const VulkanState& vulkanState, AppMemory* memory)
-typedef APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanStateFunction);
-APP_UNLOAD_VULKAN_STATE_FUNCTION(AppUnloadVulkanState);
+#define APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(name) void name(const VulkanState& vulkanState, AppMemory* memory)
+typedef APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowStateFunction);
+APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState);
+
+#define APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(name) bool name(const VulkanState& vulkanState, AppMemory* memory)
+typedef APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainStateFunction);
+APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState);
+
+#define APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(name) void name(const VulkanState& vulkanState, AppMemory* memory)
+typedef APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainStateFunction);
+APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainState);
