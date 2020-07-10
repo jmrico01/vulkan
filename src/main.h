@@ -47,6 +47,7 @@ struct VulkanAppState
     VkPipelineLayout pipelineLayout;
     VkPipeline graphicsPipeline;
     FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
+    FixedArray<VkFence, VulkanSwapchain::MAX_IMAGES> fences;
 };
 
 struct AppState

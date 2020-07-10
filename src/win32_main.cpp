@@ -437,6 +437,7 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     // Initialize audio
     AppAudio appAudio = {};
 
+    // Initialize input
     AppInput input[2] = {};
     AppInput *newInput = &input[0];
     AppInput *oldInput = &input[1];
@@ -554,8 +555,9 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         }
 
         uint32_t imageIndex;
-        VkResult result = vkAcquireNextImageKHR(vulkanState.window.device, vulkanState.swapchain.swapchain, UINT64_MAX,
-                                                vulkanState.window.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        VkResult result = vkAcquireNextImageKHR(vulkanState.window.device, vulkanState.swapchain.swapchain,
+                                                UINT64_MAX, vulkanState.window.imageAvailableSemaphore, VK_NULL_HANDLE,
+                                                &imageIndex);
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             // TODO duplicate from windowSizeChange_
             Vec2Int newSize = Win32GetRenderingViewportSize(hWnd);
@@ -596,9 +598,6 @@ int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         presentInfo.pResults = nullptr;
 
         vkQueuePresentKHR(vulkanState.window.presentQueue, &presentInfo);
-
-        vkQueueWaitIdle(vulkanState.window.graphicsQueue);
-        vkQueueWaitIdle(vulkanState.window.presentQueue);
 
         // timing information
         {

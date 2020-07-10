@@ -302,11 +302,19 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &appState->vulkanAppState.commandBuffers[(uint64)swapchainImageIndex];
+    submitInfo.pCommandBuffers = &appState->vulkanAppState.commandBuffers[swapchainImageIndex];
     submitInfo.signalSemaphoreCount = C_ARRAY_LENGTH(signalSemaphores);
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    if (vkQueueSubmit(vulkanState.window.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+    VkFence fence = appState->vulkanAppState.fences[swapchainImageIndex];
+    if (vkWaitForFences(vulkanState.window.device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        LOG_ERROR("vkWaitForFences didn't return success for fence %lu\n", swapchainImageIndex);
+    }
+    if (vkResetFences(vulkanState.window.device, 1, &fence) != VK_SUCCESS) {
+        LOG_ERROR("vkResetFences didn't return success for fence %lu\n", swapchainImageIndex);
+    }
+
+    if (vkQueueSubmit(vulkanState.window.graphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
         LOG_ERROR("Failed to submit draw command buffer\n");
     }
 
@@ -598,7 +606,23 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
         }
     }
 
-    return true;
+    // Create fences
+    {
+        app->fences.size = swapchain.framebuffers.size;
+
+        VkFenceCreateInfo fenceCreateInfo = {};
+        fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+        for (uint32 i = 0; i < app->fences.size; i++) {
+            if (vkCreateFence(window.device, &fenceCreateInfo, nullptr, &app->fences[i]) != VK_SUCCESS) {
+                LOG_ERROR("vkCreateFence failed for fence %lu\n", i);
+                return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainState)
@@ -607,6 +631,10 @@ APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainState)
 
     const VkDevice& device = vulkanState.window.device;
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
+
+    for (uint32 i = 0; i < app->fences.size; i++) {
+        vkDestroyFence(device, app->fences[i], nullptr);
+    }
 
     vkFreeCommandBuffers(device, app->commandPool, app->commandBuffers.size, app->commandBuffers.data);
     app->commandBuffers.Clear();
