@@ -19,16 +19,28 @@ struct VulkanImage
     VkImageView view;
 };
 
-struct VulkanAppState
+struct VulkanSpritePipeline
 {
-    VkCommandPool commandPool;
-    VkSampler textureSampler;
+    static const uint32 MAX_SPRITES = 32;
+    FixedArray<VulkanImage, MAX_SPRITES> sprites;
+    VkSampler spriteSampler;
 
-    // 2D sprite pipeline
-    // VkPipelineLayout pipelineLayout;
-    // VkPipeline g
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
 
-    // 3D mesh pipeline
+    VkBuffer uniformBuffer;
+    VkDeviceMemory uniformBufferMemory;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorPool descriptorPool;
+    FixedArray<VkDescriptorSet, MAX_SPRITES> descriptorSets;
+
+    VkPipelineLayout pipelineLayout;
+    VkPipeline pipeline;
+};
+
+struct VulkanMeshPipeline
+{
     static const uint32 MAX_MESHES = 64;
     FixedArray<uint32, MAX_MESHES> meshTriangleEndInds;
     VkBuffer vertexBuffer;
@@ -36,6 +48,7 @@ struct VulkanAppState
 
     static const uint32 MAX_LIGHTMAPS = 64;
     FixedArray<VulkanImage, MAX_LIGHTMAPS> lightmaps;
+    VkSampler lightmapSampler;
 
     VkBuffer uniformBuffer;
     VkDeviceMemory uniformBufferMemory;
@@ -45,9 +58,17 @@ struct VulkanAppState
     FixedArray<VkDescriptorSet, MAX_LIGHTMAPS> descriptorSets;
 
     VkPipelineLayout pipelineLayout;
-    VkPipeline graphicsPipeline;
-    FixedArray<VkCommandBuffer, VulkanSwapchain::MAX_IMAGES> commandBuffers;
-    FixedArray<VkFence, VulkanSwapchain::MAX_IMAGES> fences;
+    VkPipeline pipeline;
+};
+
+struct VulkanAppState
+{
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
+    VkFence fence;
+
+    VulkanSpritePipeline spritePipeline;
+    VulkanMeshPipeline meshPipeline;
 };
 
 struct AppState
