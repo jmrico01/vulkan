@@ -1,17 +1,17 @@
 #version 450
 
+// Vertex attributes
 layout(location = 0) in vec2 inPosition;
 layout(location = 1) in vec2 inUv;
 
-layout(location = 0) out vec2 outUv;
+// Instance attributes
+layout(location = 2) in vec2 inOrigin;
+layout(location = 3) in vec2 inSize;
 
-layout(binding = 0) uniform UniformBufferObject {
-    vec2 origin;
-    vec2 size;
-} ubo;
+layout(location = 0) out vec2 outUv;
 
 void main() {
     outUv = inUv;
 
-    gl_Position = vec4(inPosition * ubo.size + ubo.origin, 0.0, 1.0);
+    gl_Position = vec4(inPosition * inSize + inOrigin, 0.0, 1.0);
 }

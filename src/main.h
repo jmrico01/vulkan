@@ -11,6 +11,21 @@
 
 #include "vulkan.h"
 
+enum class FontId
+{
+    OCR_A_REGULAR_18,
+    OCR_A_REGULAR_24,
+
+    COUNT
+};
+
+enum class SpriteId
+{
+    JON,
+
+    COUNT
+};
+
 // TODO move this to vulkan libs?
 struct VulkanImage
 {
@@ -21,19 +36,43 @@ struct VulkanImage
 
 struct VulkanSpritePipeline
 {
-    static const uint32 MAX_SPRITES = 32;
-    FixedArray<VulkanImage, MAX_SPRITES> sprites;
-    VkSampler spriteSampler;
+    static const uint32 MAX_SPRITES = (uint32)SpriteId::COUNT;
+    static const uint32 MAX_INSTANCES = 64;
 
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
 
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
+    VkBuffer instanceBuffer;
+    VkDeviceMemory instanceBufferMemory;
+
+    FixedArray<VulkanImage, MAX_SPRITES> sprites;
+    VkSampler spriteSampler;
 
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
     FixedArray<VkDescriptorSet, MAX_SPRITES> descriptorSets;
+
+    VkPipelineLayout pipelineLayout;
+    VkPipeline pipeline;
+};
+
+struct VulkanTextPipeline
+{
+    static const uint32 MAX_FONTS = (uint32)FontId::COUNT;
+    static const uint32 MAX_CHARACTERS = 1024;
+
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
+
+    VkBuffer instanceBuffer;
+    VkDeviceMemory instanceBufferMemory;
+
+    FixedArray<VulkanImage, MAX_FONTS> atlases;
+    VkSampler atlasSampler;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorPool descriptorPool;
+    FixedArray<VkDescriptorSet, MAX_FONTS> descriptorSets;
 
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;

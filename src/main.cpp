@@ -88,7 +88,19 @@ bool LoadVulkanImage(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue q
     return true;
 }
 
-struct VulkanVertex
+struct VulkanSpriteVertex
+{
+    Vec2 pos;
+    Vec2 uv;
+};
+
+struct VulkanSpriteInstanceData
+{
+    Vec2 origin;
+    Vec2 size;
+};
+
+struct VulkanMeshVertex
 {
     Vec3 pos;
     Vec3 normal;
@@ -97,18 +109,25 @@ struct VulkanVertex
     float32 lightmapWeight;
 };
 
-using VulkanTriangle = StaticArray<VulkanVertex, 3>;
+using VulkanMeshTriangle = StaticArray<VulkanMeshVertex, 3>;
 
-struct VulkanGeometry
+struct VulkanMeshGeometry
 {
     bool valid;
     Array<uint32> meshEndInds;
-    Array<VulkanTriangle> triangles;
+    Array<VulkanMeshTriangle> triangles;
 };
 
-VulkanGeometry ObjToVulkanGeometry(const LoadObjResult& obj, LinearAllocator* allocator)
+struct MeshUniformBufferObject
 {
-    VulkanGeometry geometry;
+    alignas(16) Mat4 model;
+    alignas(16) Mat4 view;
+    alignas(16) Mat4 proj;
+};
+
+VulkanMeshGeometry ObjToVulkanMeshGeometry(const LoadObjResult& obj, LinearAllocator* allocator)
+{
+    VulkanMeshGeometry geometry;
     geometry.valid = false;
     geometry.meshEndInds = allocator->NewArray<uint32>(obj.models.size);
     if (geometry.meshEndInds.data == nullptr) {
@@ -119,7 +138,7 @@ VulkanGeometry ObjToVulkanGeometry(const LoadObjResult& obj, LinearAllocator* al
     for (uint32 i = 0; i < obj.models.size; i++) {
         totalTriangles += obj.models[i].triangles.size + obj.models[i].quads.size * 2;
     }
-    geometry.triangles = allocator->NewArray<VulkanTriangle>(totalTriangles);
+    geometry.triangles = allocator->NewArray<VulkanMeshTriangle>(totalTriangles);
     if (geometry.triangles.data == nullptr) {
         return geometry;
     }
@@ -171,13 +190,6 @@ VulkanGeometry ObjToVulkanGeometry(const LoadObjResult& obj, LinearAllocator* al
     return geometry;
 }
 
-struct UniformBufferObject
-{
-    alignas(16) Mat4 model;
-    alignas(16) Mat4 view;
-    alignas(16) Mat4 proj;
-};
-
 internal AppState* GetAppState(AppMemory* memory)
 {
     DEBUG_ASSERT(sizeof(AppState) < memory->permanent.size);
@@ -228,7 +240,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     appState->totalElapsed += deltaTime;
 
-    UniformBufferObject ubo;
+    MeshUniformBufferObject ubo;
     ubo.model = Mat4::one;
 
     const float32 cameraSensitivity = 2.0f;
@@ -286,13 +298,66 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const float32 farZ = 50.0f;
     ubo.proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
-    const VulkanMeshPipeline& meshPipeline = appState->vulkanAppState.meshPipeline;;
-    void* data;
-    vkMapMemory(vulkanState.window.device, meshPipeline.uniformBufferMemory, 0, sizeof(ubo), 0, &data);
-    MemCopy(data, &ubo, sizeof(ubo));
-    vkUnmapMemory(vulkanState.window.device, meshPipeline.uniformBufferMemory);
+    struct VulkanSpriteDrawData
+    {
+        SpriteId id;
+        Vec2 origin;
+        Vec2 size;
+    };
+    FixedArray<VulkanSpriteDrawData, VulkanSpritePipeline::MAX_INSTANCES> spriteDrawData;
+    spriteDrawData.Clear();
 
-    // Vulkan - fill and submit command buffer
+    const uint32 NUM_JONS = 10;
+    for (uint32 i = 0; i < NUM_JONS; i++) {
+        const Vec2 origin = { RandFloat32(-1.0f, 1.0f), RandFloat32(-1.0f, 1.0f) };
+        const Vec2 size = { RandFloat32(0.1f, 0.2f), RandFloat32(0.1f, 0.2f) };
+        spriteDrawData.Append({ SpriteId::JON, origin, size });
+    }
+
+    // ================================================================================================
+    // Vulkan rendering ===============================================================================
+    // ================================================================================================
+
+    // Copy sprite instance data to GPU
+    StaticArray<uint32, VulkanSpritePipeline::MAX_SPRITES> spriteNumInstances;
+    {
+        const VulkanSpritePipeline& spritePipeline = appState->vulkanAppState.spritePipeline;
+
+        LinearAllocator allocator(memory->transient);
+        FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>* instanceData = allocator.New<FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>>();
+        instanceData->Clear();
+
+        for (uint32 i = 0; i < spriteNumInstances.SIZE; i++) {
+            spriteNumInstances[i] = 0;
+
+            for (uint32 j = 0; j < spriteDrawData.size; j++) {
+                const uint32 spriteIndex = (uint32)spriteDrawData[j].id;
+                if (spriteIndex != i) continue;
+
+                spriteNumInstances[i]++;
+                instanceData->Append({ .origin = spriteDrawData[j].origin, .size = spriteDrawData[j].size });
+            }
+
+        }
+
+        void* data;
+        const uint32 bufferSize = instanceData->size * sizeof(VulkanSpriteInstanceData);
+        vkMapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory, 0, bufferSize, 0, &data);
+        MemCopy(data, instanceData->data, bufferSize);
+        vkUnmapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory);
+    }
+
+    // Copy mesh uniform buffer data to GPU
+    {
+        const VulkanMeshPipeline& meshPipeline = appState->vulkanAppState.meshPipeline;
+
+        void* data;
+        vkMapMemory(vulkanState.window.device, meshPipeline.uniformBufferMemory,
+                    0, sizeof(MeshUniformBufferObject), 0, &data);
+        MemCopy(data, &ubo, sizeof(ubo));
+        vkUnmapMemory(vulkanState.window.device, meshPipeline.uniformBufferMemory);
+    }
+
     const VkSemaphore waitSemaphores[] = { vulkanState.window.imageAvailableSemaphore };
     const VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
@@ -339,22 +404,46 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     vkCmdBeginRenderPass(buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, appState->vulkanAppState.meshPipeline.pipeline);
+    // Submit commands for sprite pipeline
+    {
+        const VulkanSpritePipeline& spritePipeline = appState->vulkanAppState.spritePipeline;
 
-    const VkBuffer vertexBuffers[] = { appState->vulkanAppState.meshPipeline.vertexBuffer };
-    const VkDeviceSize offsets[] = { 0 };
-    vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
+        vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, spritePipeline.pipeline);
 
-    uint32 startTriangleInd = 0;
-    for (uint32 j = 0; j < appState->vulkanAppState.meshPipeline.meshTriangleEndInds.size; j++) {
-        vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                appState->vulkanAppState.meshPipeline.pipelineLayout, 0, 1,
-                                &appState->vulkanAppState.meshPipeline.descriptorSets[j], 0, nullptr);
+        const VkBuffer vertexBuffers[] = { spritePipeline.vertexBuffer, spritePipeline.instanceBuffer };
+        const VkDeviceSize offsets[] = { 0, 0 };
+        vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
-        const uint32 numTriangles = appState->vulkanAppState.meshPipeline.meshTriangleEndInds[j] - startTriangleInd;
-        vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
+        uint32 startInstance = 0;
+        for (uint32 i = 0; i < spriteNumInstances.SIZE; i++) {
+            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, spritePipeline.pipelineLayout, 0, 1,
+                                    &spritePipeline.descriptorSets[i], 0, nullptr);
 
-        startTriangleInd = appState->vulkanAppState.meshPipeline.meshTriangleEndInds[j];
+            vkCmdDraw(buffer, 6, spriteNumInstances[i], 0, startInstance);
+            startInstance += spriteNumInstances[i];
+        }
+    }
+
+    // Submit commands for mesh pipeline
+    {
+        const VulkanMeshPipeline& meshPipeline = appState->vulkanAppState.meshPipeline;
+
+        vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipeline);
+
+        const VkBuffer vertexBuffers[] = { meshPipeline.vertexBuffer };
+        const VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
+
+        uint32 startTriangleInd = 0;
+        for (uint32 i = 0; i < meshPipeline.meshTriangleEndInds.size; i++) {
+            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipelineLayout, 0, 1,
+                                    &meshPipeline.descriptorSets[i], 0, nullptr);
+
+            const uint32 numTriangles = meshPipeline.meshTriangleEndInds[i] - startTriangleInd;
+            vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
+
+            startTriangleInd = meshPipeline.meshTriangleEndInds[i];
+        }
     }
 
     vkCmdEndRenderPass(buffer);
@@ -390,7 +479,204 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
     LinearAllocator allocator(memory->transient);
 
-    // Create graphics pipeline
+    // Create sprite pipeline
+    {
+        const Array<uint8> vertShaderCode = LoadEntireFile(ToString("data/shaders/sprite.vert.spv"), &allocator);
+        if (vertShaderCode.data == nullptr) {
+            LOG_ERROR("Failed to load vertex shader code\n");
+            return false;
+        }
+        const Array<uint8> fragShaderCode = LoadEntireFile(ToString("data/shaders/sprite.frag.spv"), &allocator);
+        if (fragShaderCode.data == nullptr) {
+            LOG_ERROR("Failed to load fragment shader code\n");
+            return false;
+        }
+
+        VkShaderModule vertShaderModule;
+        if (!CreateShaderModule(vertShaderCode, window.device, &vertShaderModule)) {
+            LOG_ERROR("Failed to create vertex shader module\n");
+            return false;
+        }
+        defer(vkDestroyShaderModule(window.device, vertShaderModule, nullptr));
+
+        VkShaderModule fragShaderModule;
+        if (!CreateShaderModule(fragShaderCode, window.device, &fragShaderModule)) {
+            LOG_ERROR("Failed to create fragment shader module\n");
+            return false;
+        }
+        defer(vkDestroyShaderModule(window.device, fragShaderModule, nullptr));
+
+        VkPipelineShaderStageCreateInfo vertShaderStageCreateInfo = {};
+        vertShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageCreateInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageCreateInfo.module = vertShaderModule;
+        vertShaderStageCreateInfo.pName = "main";
+        // vertShaderStageCreateInfo.pSpecializationInfo is useful for setting shader constants
+
+        VkPipelineShaderStageCreateInfo fragShaderStageCreateInfo = {};
+        fragShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageCreateInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageCreateInfo.module = fragShaderModule;
+        fragShaderStageCreateInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo };
+
+        VkVertexInputBindingDescription bindingDescriptions[2] = {};
+        VkVertexInputAttributeDescription attributeDescriptions[4] = {};
+
+        // Per-vertex attribute bindings
+        bindingDescriptions[0].binding = 0;
+        bindingDescriptions[0].stride = sizeof(VulkanSpriteVertex);
+        bindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(VulkanSpriteVertex, pos);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(VulkanSpriteVertex, uv);
+
+        // Per-instance attribute bindings
+        bindingDescriptions[1].binding = 1;
+        bindingDescriptions[1].stride = sizeof(VulkanSpriteInstanceData);
+        bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+        attributeDescriptions[2].binding = 1;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(VulkanSpriteInstanceData, origin);
+
+        attributeDescriptions[3].binding = 1;
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(VulkanSpriteInstanceData, size);
+
+        VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
+        vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputCreateInfo.vertexBindingDescriptionCount = C_ARRAY_LENGTH(bindingDescriptions);
+        vertexInputCreateInfo.pVertexBindingDescriptions = bindingDescriptions;
+        vertexInputCreateInfo.vertexAttributeDescriptionCount = C_ARRAY_LENGTH(attributeDescriptions);
+        vertexInputCreateInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {};
+        inputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssemblyCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssemblyCreateInfo.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport = {};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float32)swapchain.extent.width;
+        viewport.height = (float32)swapchain.extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor = {};
+        scissor.offset = { 0, 0 };
+        scissor.extent = swapchain.extent;
+
+        VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {};
+        viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportStateCreateInfo.viewportCount = 1;
+        viewportStateCreateInfo.pViewports = &viewport;
+        viewportStateCreateInfo.scissorCount = 1;
+        viewportStateCreateInfo.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizerCreateInfo = {};
+        rasterizerCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizerCreateInfo.depthClampEnable = VK_FALSE;
+        rasterizerCreateInfo.rasterizerDiscardEnable = VK_FALSE;
+        rasterizerCreateInfo.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizerCreateInfo.lineWidth = 1.0f;
+        rasterizerCreateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizerCreateInfo.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizerCreateInfo.depthBiasEnable = VK_FALSE;
+        rasterizerCreateInfo.depthBiasConstantFactor = 0.0f;
+        rasterizerCreateInfo.depthBiasClamp = 0.0f;
+        rasterizerCreateInfo.depthBiasSlopeFactor = 0.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisampleCreateInfo = {};
+        multisampleCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampleCreateInfo.sampleShadingEnable = VK_FALSE;
+        multisampleCreateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampleCreateInfo.minSampleShading = 1.0f;
+        multisampleCreateInfo.pSampleMask = nullptr;
+        multisampleCreateInfo.alphaToCoverageEnable = VK_FALSE;
+        multisampleCreateInfo.alphaToOneEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+        VkPipelineColorBlendStateCreateInfo colorBlendingCreateInfo = {};
+        colorBlendingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlendingCreateInfo.logicOpEnable = VK_FALSE;
+        colorBlendingCreateInfo.logicOp = VK_LOGIC_OP_COPY;
+        colorBlendingCreateInfo.attachmentCount = 1;
+        colorBlendingCreateInfo.pAttachments = &colorBlendAttachment;
+        colorBlendingCreateInfo.blendConstants[0] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[1] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[2] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[3] = 0.0f;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo = {};
+        depthStencilCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencilCreateInfo.depthTestEnable = VK_TRUE;
+        depthStencilCreateInfo.depthWriteEnable = VK_TRUE;
+        depthStencilCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencilCreateInfo.depthBoundsTestEnable = VK_FALSE;
+        depthStencilCreateInfo.minDepthBounds = 0.0f; // disabled
+        depthStencilCreateInfo.maxDepthBounds = 1.0f; // disabled
+        depthStencilCreateInfo.stencilTestEnable = VK_FALSE;
+
+        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutCreateInfo.setLayoutCount = 1;
+        pipelineLayoutCreateInfo.pSetLayouts = &app->spritePipeline.descriptorSetLayout;
+        pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+        pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+
+        if (vkCreatePipelineLayout(window.device, &pipelineLayoutCreateInfo, nullptr,
+                                   &app->spritePipeline.pipelineLayout) != VK_SUCCESS) {
+            LOG_ERROR("vkCreatePipelineLayout failed\n");
+            return false;
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stageCount = C_ARRAY_LENGTH(shaderStages);
+        pipelineCreateInfo.pStages = shaderStages;
+        pipelineCreateInfo.pVertexInputState = &vertexInputCreateInfo;
+        pipelineCreateInfo.pInputAssemblyState = &inputAssemblyCreateInfo;
+        pipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
+        pipelineCreateInfo.pRasterizationState = &rasterizerCreateInfo;
+        pipelineCreateInfo.pMultisampleState = &multisampleCreateInfo;
+        pipelineCreateInfo.pDepthStencilState = &depthStencilCreateInfo;
+        pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
+        pipelineCreateInfo.pDynamicState = nullptr;
+        pipelineCreateInfo.layout = app->spritePipeline.pipelineLayout;
+        pipelineCreateInfo.renderPass = swapchain.renderPass;
+        pipelineCreateInfo.subpass = 0;
+        pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+        pipelineCreateInfo.basePipelineIndex = -1;
+
+        if (vkCreateGraphicsPipelines(window.device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr,
+                                      &app->spritePipeline.pipeline) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateGraphicsPipeline failed\n");
+            return false;
+        }
+    }
+
+    // Create mesh pipeline
     {
         const Array<uint8> vertShaderCode = LoadEntireFile(ToString("data/shaders/mesh.vert.spv"), &allocator);
         if (vertShaderCode.data == nullptr) {
@@ -434,34 +720,34 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
 
         VkVertexInputBindingDescription bindingDescription = {};
         bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(VulkanVertex);
+        bindingDescription.stride = sizeof(VulkanMeshVertex);
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
         VkVertexInputAttributeDescription attributeDescriptions[5] = {};
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(VulkanVertex, pos);
+        attributeDescriptions[0].offset = offsetof(VulkanMeshVertex, pos);
 
         attributeDescriptions[1].binding = 0;
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(VulkanVertex, normal);
+        attributeDescriptions[1].offset = offsetof(VulkanMeshVertex, normal);
 
         attributeDescriptions[2].binding = 0;
         attributeDescriptions[2].location = 2;
         attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(VulkanVertex, color);
+        attributeDescriptions[2].offset = offsetof(VulkanMeshVertex, color);
 
         attributeDescriptions[3].binding = 0;
         attributeDescriptions[3].location = 3;
         attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[3].offset = offsetof(VulkanVertex, uv);
+        attributeDescriptions[3].offset = offsetof(VulkanMeshVertex, uv);
 
         attributeDescriptions[4].binding = 0;
         attributeDescriptions[4].location = 4;
         attributeDescriptions[4].format = VK_FORMAT_R32_SFLOAT;
-        attributeDescriptions[4].offset = offsetof(VulkanVertex, lightmapWeight);
+        attributeDescriptions[4].offset = offsetof(VulkanMeshVertex, lightmapWeight);
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
         vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -547,17 +833,6 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
         depthStencilCreateInfo.maxDepthBounds = 1.0f; // disabled
         depthStencilCreateInfo.stencilTestEnable = VK_FALSE;
 
-#if 0
-        VkDynamicState dynamicStates[] = {
-            VK_DYNAMIC_STATE_VIEWPORT
-        };
-
-        VkPipelineDynamicStateCreateInfo dynamicStateCreateInfo = {};
-        dynamicStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamicStateCreateInfo.dynamicStateCount = C_ARRAY_LENGTH(dynamicStates);
-        dynamicStateCreateInfo.pDynamicStates = dynamicStates;
-#endif
-
         VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
         pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutCreateInfo.setLayoutCount = 1;
@@ -608,6 +883,527 @@ APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainState)
 
     vkDestroyPipeline(device, app->meshPipeline.pipeline, nullptr);
     vkDestroyPipelineLayout(device, app->meshPipeline.pipelineLayout, nullptr);
+
+    vkDestroyPipeline(device, app->spritePipeline.pipeline, nullptr);
+    vkDestroyPipelineLayout(device, app->spritePipeline.pipelineLayout, nullptr);
+}
+
+bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, LinearAllocator* allocator,
+                        VulkanSpritePipeline* spritePipeline)
+{
+    UNREFERENCED_PARAMETER(allocator);
+
+    // Create vertex buffer
+    {
+        const VulkanSpriteVertex SPRITE_VERTICES[] = {
+            { { 0.0f, 0.0f }, { 0.0f, 0.0f } },
+            { { 1.0f, 0.0f }, { 1.0f, 0.0f } },
+            { { 1.0f, 1.0f }, { 1.0f, 1.0f } },
+
+            { { 1.0f, 1.0f }, { 1.0f, 1.0f } },
+            { { 0.0f, 1.0f }, { 0.0f, 1.0f } },
+            { { 0.0f, 0.0f }, { 0.0f, 0.0f } },
+        };
+
+        const VkDeviceSize vertexBufferSize = C_ARRAY_LENGTH(SPRITE_VERTICES) * sizeof(VulkanSpriteVertex);
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for staging buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from CPU into memory-mapped staging buffer
+        void* data;
+        vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
+
+        MemCopy(data, SPRITE_VERTICES, vertexBufferSize);
+
+        vkUnmapMemory(window.device, stagingBufferMemory);
+
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          window.device, window.physicalDevice,
+                          &spritePipeline->vertexBuffer, &spritePipeline->vertexBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for vertex buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from staging buffer into GPU vertex buffer
+        CopyBuffer(window.device, commandPool, window.graphicsQueue,
+                   stagingBuffer, spritePipeline->vertexBuffer, vertexBufferSize);
+
+        vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+        vkFreeMemory(window.device, stagingBufferMemory, nullptr);
+    }
+
+    // Create instance buffer
+    {
+        const VkDeviceSize bufferSize = VulkanSpritePipeline::MAX_INSTANCES * sizeof(VulkanSpriteInstanceData);
+
+        if (!CreateBuffer(bufferSize,
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice,
+                          &spritePipeline->instanceBuffer, &spritePipeline->instanceBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for instance buffer\n");
+            return false;
+        }
+    }
+
+    // Create sprites
+    {
+        spritePipeline->sprites.size = VulkanSpritePipeline::MAX_SPRITES;
+
+        const char* filePath = "data/sprites/jon.png";
+        int width, height, channels;
+        unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
+        if (imageData == NULL) {
+            LOG_ERROR("Failed to load sprite: %s\n", filePath);
+            return false;
+        }
+        defer(stbi_image_free(imageData));
+
+        if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, commandPool, width, height,
+                             channels, (const uint8*)imageData, &spritePipeline->sprites[(uint32)SpriteId::JON])) {
+            LOG_ERROR("Failed to Vulkan image for sprite %s\n", filePath);
+            return false;
+        }
+    }
+
+    // Create lightmap sampler
+    {
+        VkSamplerCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        createInfo.magFilter = VK_FILTER_NEAREST;
+        createInfo.minFilter = VK_FILTER_NEAREST;
+        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.anisotropyEnable = VK_FALSE;
+        createInfo.maxAnisotropy = 1.0f;
+        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        createInfo.unnormalizedCoordinates = VK_FALSE;
+        createInfo.compareEnable = VK_FALSE;
+        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        createInfo.mipLodBias = 0.0f;
+        createInfo.minLod = 0.0f;
+        createInfo.maxLod = 0.0f;
+
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &spritePipeline->spriteSampler) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSampler failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set layout
+    {
+        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+        samplerLayoutBinding.binding = 0;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
+        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutCreateInfo.bindingCount = 1;
+        layoutCreateInfo.pBindings = &samplerLayoutBinding;
+
+        if (vkCreateDescriptorSetLayout(window.device, &layoutCreateInfo, nullptr,
+                                        &spritePipeline->descriptorSetLayout) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorSetLayout failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor pool
+    {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = VulkanSpritePipeline::MAX_SPRITES;
+
+        VkDescriptorPoolCreateInfo poolInfo = {};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = VulkanSpritePipeline::MAX_SPRITES;
+
+        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &spritePipeline->descriptorPool) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorPool failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set
+    {
+        FixedArray<VkDescriptorSetLayout, VulkanSpritePipeline::MAX_SPRITES> layouts;
+        layouts.size = VulkanSpritePipeline::MAX_SPRITES;
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            layouts[i] = spritePipeline->descriptorSetLayout;
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo = {};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = spritePipeline->descriptorPool;
+        allocInfo.descriptorSetCount = VulkanSpritePipeline::MAX_SPRITES;
+        allocInfo.pSetLayouts = layouts.data;
+
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, spritePipeline->descriptorSets.data) != VK_SUCCESS) {
+            LOG_ERROR("vkAllocateDescriptorSets failed\n");
+            return false;
+        }
+        spritePipeline->descriptorSets.size = VulkanSpritePipeline::MAX_SPRITES;
+
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = spritePipeline->sprites[i].view;
+            imageInfo.sampler = spritePipeline->spriteSampler;
+
+            VkWriteDescriptorSet descriptorWrite = {};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = spritePipeline->descriptorSets[i];
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
+
+            vkUpdateDescriptorSets(window.device, 1, &descriptorWrite, 0, nullptr);
+        }
+    }
+
+    return true;
+}
+
+void UnloadSpritePipeline(VkDevice device, VulkanSpritePipeline* spritePipeline)
+{
+    spritePipeline->descriptorSets.Clear();
+    vkDestroyDescriptorPool(device, spritePipeline->descriptorPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, spritePipeline->descriptorSetLayout, nullptr);
+
+    vkDestroySampler(device, spritePipeline->spriteSampler, nullptr);
+
+    for (uint32 i = 0; i < spritePipeline->sprites.size; i++) {
+        vkDestroyImageView(device, spritePipeline->sprites[i].view, nullptr);
+        vkDestroyImage(device, spritePipeline->sprites[i].image, nullptr);
+        vkFreeMemory(device, spritePipeline->sprites[i].memory, nullptr);
+    }
+    spritePipeline->sprites.Clear();
+
+    vkDestroyBuffer(device, spritePipeline->instanceBuffer, nullptr);
+    vkFreeMemory(device, spritePipeline->instanceBufferMemory, nullptr);
+
+    vkDestroyBuffer(device, spritePipeline->vertexBuffer, nullptr);
+    vkFreeMemory(device, spritePipeline->vertexBufferMemory, nullptr);
+}
+
+bool LoadMeshPipeline(const VulkanWindow& window, VkCommandPool commandPool, LinearAllocator* allocator,
+                      VulkanMeshPipeline* meshPipeline)
+{
+    // Load vulkan vertex geometry
+    VulkanMeshGeometry geometry;
+    {
+        LoadObjResult obj;
+        if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, allocator)) {
+            LOG_ERROR("Failed to load reference scene .obj\n");
+            return false;
+        }
+
+        geometry = ObjToVulkanMeshGeometry(obj, allocator);
+        if (!geometry.valid) {
+            LOG_ERROR("Failed to load Vulkan geometry from obj\n");
+            return false;
+        }
+
+        // Set per-vertex lightmap weights based on triangle areas
+        for (uint32 i = 0; i < geometry.triangles.size; i++) {
+            VulkanMeshTriangle& t = geometry.triangles[i];
+            const float32 area = TriangleArea(t[0].pos, t[1].pos, t[2].pos);
+            const float32 weight = ClampFloat32(SmoothStep(0.0f, 0.005f, area), 0.0f, 1.0f);
+            for (int j = 0; j < 3; j++) {
+                t[j].lightmapWeight = 1.0f;
+            }
+        }
+
+        // Load vertex colors from lightmap data
+        uint32 startInd = 0;
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            const_string filePath = AllocPrintf(allocator, "data/lightmaps/%llu.v", i);
+            Array<uint8> vertexColors = LoadEntireFile(filePath, allocator);
+            if (vertexColors.data == nullptr) {
+                LOG_ERROR("Failed to load vertex colors for mesh %lu\n", i);
+                return false;
+            }
+
+            const bool sizeEvenVec3 = vertexColors.size % sizeof(Vec3) == 0;
+            const bool sizeEvenTriangles = (vertexColors.size / sizeof(Vec3)) % 3 == 0;
+            if (!sizeEvenVec3 || !sizeEvenTriangles) {
+                LOG_ERROR("Incorrect format for vertex colors at %.*s, mesh %lu\n", filePath.size, filePath.data, i);
+                return false;
+            }
+
+            const uint32 expectedColors = (geometry.meshEndInds[i] - startInd) * 3;
+            const uint32 numColors = vertexColors.size / sizeof(Vec3);
+            if (expectedColors != numColors) {
+                LOG_ERROR("Mismatched number of vertex colors, expected %lu, got %lu\n", expectedColors, numColors);
+                return false;
+            }
+
+            const Array<Vec3> colors = {
+                .size = vertexColors.size / sizeof(Vec3),
+                .data = (Vec3*)vertexColors.data
+            };
+            for (uint32 j = startInd; j < geometry.meshEndInds[i]; j++) {
+                const uint32 colorInd = (j - startInd) * 3;
+                geometry.triangles[j][0].color = colors[colorInd];
+                geometry.triangles[j][1].color = colors[colorInd + 1];
+                geometry.triangles[j][2].color = colors[colorInd + 2];
+            }
+
+            startInd = geometry.meshEndInds[i];
+        }
+
+        // Save mesh triangle end inds to VulkanApp structure for draw commands to use
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            meshPipeline->meshTriangleEndInds.Append(geometry.meshEndInds[i]);
+        }
+    }
+
+    // Create vertex buffer
+    {
+        const VkDeviceSize vertexBufferSize = geometry.triangles.size * 3 * sizeof(VulkanMeshVertex);
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for staging buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from CPU into memory-mapped staging buffer
+        void* data;
+        vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
+
+        MemCopy(data, geometry.triangles.data, vertexBufferSize);
+
+        vkUnmapMemory(window.device, stagingBufferMemory);
+
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          window.device, window.physicalDevice,
+                          &meshPipeline->vertexBuffer, &meshPipeline->vertexBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for vertex buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from staging buffer into GPU vertex buffer
+        CopyBuffer(window.device, commandPool, window.graphicsQueue,
+                   stagingBuffer, meshPipeline->vertexBuffer, vertexBufferSize);
+
+        vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+        vkFreeMemory(window.device, stagingBufferMemory, nullptr);
+    }
+
+    // Create lightmaps
+    {
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            const char* filePath = ToCString(AllocPrintf(allocator, "data/lightmaps/%llu.png", i), allocator);
+            int width, height, channels;
+            unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
+            if (imageData == NULL) {
+                LOG_ERROR("Failed to load lightmap: %s\n", filePath);
+                return false;
+            }
+            defer(stbi_image_free(imageData));
+
+            VulkanImage* lightmapImage = meshPipeline->lightmaps.Append();
+            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, commandPool,
+                                 width, height, channels, (const uint8*)imageData, lightmapImage)) {
+                LOG_ERROR("Failed to Vulkan image for lightmap %s\n", filePath);
+                return false;
+            }
+        }
+    }
+
+    // Create lightmap sampler
+    {
+        VkSamplerCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        createInfo.magFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.minFilter = LIGHTMAP_TEXTURE_FILTER;
+        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.anisotropyEnable = VK_FALSE;
+        createInfo.maxAnisotropy = 1.0f;
+        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        createInfo.unnormalizedCoordinates = VK_FALSE;
+        createInfo.compareEnable = VK_FALSE;
+        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        createInfo.mipLodBias = 0.0f;
+        createInfo.minLod = 0.0f;
+        createInfo.maxLod = 0.0f;
+
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &meshPipeline->lightmapSampler) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSampler failed\n");
+            return false;
+        }
+    }
+
+    // Create uniform buffer
+    {
+        VkDeviceSize uniformBufferSize = sizeof(MeshUniformBufferObject);
+        if (!CreateBuffer(uniformBufferSize,
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice,
+                          &meshPipeline->uniformBuffer, &meshPipeline->uniformBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for uniform buffer\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set layout
+    {
+        VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+        uboLayoutBinding.binding = 0;
+        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uboLayoutBinding.descriptorCount = 1;
+        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        uboLayoutBinding.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+        samplerLayoutBinding.binding = 1;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        const VkDescriptorSetLayoutBinding bindings[] = { uboLayoutBinding, samplerLayoutBinding };
+
+        VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
+        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutCreateInfo.bindingCount = C_ARRAY_LENGTH(bindings);
+        layoutCreateInfo.pBindings = bindings;
+
+        if (vkCreateDescriptorSetLayout(window.device, &layoutCreateInfo, nullptr,
+                                        &meshPipeline->descriptorSetLayout) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorSetLayout failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor pool
+    {
+        VkDescriptorPoolSize poolSizes[2] = {};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = geometry.meshEndInds.size;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[1].descriptorCount = geometry.meshEndInds.size;
+
+        VkDescriptorPoolCreateInfo poolInfo = {};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = geometry.meshEndInds.size;
+
+        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &meshPipeline->descriptorPool) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorPool failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set
+    {
+        FixedArray<VkDescriptorSetLayout, VulkanMeshPipeline::MAX_LIGHTMAPS> layouts;
+        layouts.Clear();
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            layouts.Append(meshPipeline->descriptorSetLayout);
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo = {};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = meshPipeline->descriptorPool;
+        allocInfo.descriptorSetCount = geometry.meshEndInds.size;
+        allocInfo.pSetLayouts = layouts.data;
+
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, meshPipeline->descriptorSets.data) != VK_SUCCESS) {
+            LOG_ERROR("vkAllocateDescriptorSets failed\n");
+            return false;
+        }
+        meshPipeline->descriptorSets.size = geometry.meshEndInds.size;
+
+        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
+            VkWriteDescriptorSet descriptorWrites[2] = {};
+
+            VkDescriptorBufferInfo bufferInfo = {};
+            bufferInfo.buffer = meshPipeline->uniformBuffer;
+            bufferInfo.offset = 0;
+            bufferInfo.range = sizeof(MeshUniformBufferObject);
+
+            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[0].dstSet = meshPipeline->descriptorSets[i];
+            descriptorWrites[0].dstBinding = 0;
+            descriptorWrites[0].dstArrayElement = 0;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorCount = 1;
+            descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = meshPipeline->lightmaps[i].view;
+            imageInfo.sampler = meshPipeline->lightmapSampler;
+
+            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[1].dstSet = meshPipeline->descriptorSets[i];
+            descriptorWrites[1].dstBinding = 1;
+            descriptorWrites[1].dstArrayElement = 0;
+            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[1].descriptorCount = 1;
+            descriptorWrites[1].pImageInfo = &imageInfo;
+
+            vkUpdateDescriptorSets(window.device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
+        }
+    }
+
+    return true;
+}
+
+void UnloadMeshPipeline(VkDevice device, VulkanMeshPipeline* meshPipeline)
+{
+    meshPipeline->descriptorSets.Clear();
+    vkDestroyDescriptorPool(device, meshPipeline->descriptorPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, meshPipeline->descriptorSetLayout, nullptr);
+
+    vkDestroyBuffer(device, meshPipeline->uniformBuffer, nullptr);
+    vkFreeMemory(device, meshPipeline->uniformBufferMemory, nullptr);
+
+    vkDestroySampler(device, meshPipeline->lightmapSampler, nullptr);
+
+    for (uint32 i = 0; i < meshPipeline->lightmaps.size; i++) {
+        vkDestroyImageView(device, meshPipeline->lightmaps[i].view, nullptr);
+        vkDestroyImage(device, meshPipeline->lightmaps[i].image, nullptr);
+        vkFreeMemory(device, meshPipeline->lightmaps[i].memory, nullptr);
+    }
+    meshPipeline->lightmaps.Clear();
+
+    vkDestroyBuffer(device, meshPipeline->vertexBuffer, nullptr);
+    vkFreeMemory(device, meshPipeline->vertexBufferMemory, nullptr);
+
+    meshPipeline->meshTriangleEndInds.Clear();
 }
 
 APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
@@ -660,275 +1456,16 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
         }
     }
 
-    // Load vulkan vertex geometry
-    VulkanGeometry geometry;
-    {
-        LoadObjResult obj;
-        if (!LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
-            LOG_ERROR("Failed to load reference scene .obj\n");
-            return false;
-        }
-
-        geometry = ObjToVulkanGeometry(obj, &allocator);
-        if (!geometry.valid) {
-            LOG_ERROR("Failed to load Vulkan geometry from obj\n");
-            return false;
-        }
-
-        // Set per-vertex lightmap weights based on triangle areas
-        for (uint32 i = 0; i < geometry.triangles.size; i++) {
-            VulkanTriangle& t = geometry.triangles[i];
-            const float32 area = TriangleArea(t[0].pos, t[1].pos, t[2].pos);
-            const float32 weight = ClampFloat32(SmoothStep(0.0f, 0.005f, area), 0.0f, 1.0f);
-            for (int j = 0; j < 3; j++) {
-                t[j].lightmapWeight = 1.0f;
-            }
-        }
-
-        // Load vertex colors from lightmap data
-        uint32 startInd = 0;
-        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
-            const_string filePath = AllocPrintf(&allocator, "data/lightmaps/%llu.v", i);
-            Array<uint8> vertexColors = LoadEntireFile(filePath, &allocator);
-            if (vertexColors.data == nullptr) {
-                LOG_ERROR("Failed to load vertex colors for mesh %lu\n", i);
-                return false;
-            }
-
-            const bool sizeEvenVec3 = vertexColors.size % sizeof(Vec3) == 0;
-            const bool sizeEvenTriangles = (vertexColors.size / sizeof(Vec3)) % 3 == 0;
-            if (!sizeEvenVec3 || !sizeEvenTriangles) {
-                LOG_ERROR("Incorrect format for vertex colors at %.*s, mesh %lu\n", filePath.size, filePath.data, i);
-                return false;
-            }
-
-            const uint32 expectedColors = (geometry.meshEndInds[i] - startInd) * 3;
-            const uint32 numColors = vertexColors.size / sizeof(Vec3);
-            if (expectedColors != numColors) {
-                LOG_ERROR("Mismatched number of vertex colors, expected %lu, got %lu\n", expectedColors, numColors);
-                return false;
-            }
-
-            const Array<Vec3> colors = {
-                .size = vertexColors.size / sizeof(Vec3),
-                .data = (Vec3*)vertexColors.data
-            };
-            for (uint32 j = startInd; j < geometry.meshEndInds[i]; j++) {
-                const uint32 colorInd = (j - startInd) * 3;
-                geometry.triangles[j][0].color = colors[colorInd];
-                geometry.triangles[j][1].color = colors[colorInd + 1];
-                geometry.triangles[j][2].color = colors[colorInd + 2];
-            }
-
-            startInd = geometry.meshEndInds[i];
-        }
-
-        // Save mesh triangle end inds to VulkanApp structure for draw commands to use
-        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
-            app->meshPipeline.meshTriangleEndInds.Append(geometry.meshEndInds[i]);
-        }
+    const bool spritePipeline = LoadSpritePipeline(window, app->commandPool, &allocator, &app->spritePipeline);
+    if (!spritePipeline) {
+        LOG_ERROR("Failed to load Vulkan sprite pipeline\n");
+        return false;
     }
 
-
-    // Create vertex buffer
-    {
-        const VkDeviceSize vertexBufferSize = geometry.triangles.size * 3 * sizeof(VulkanVertex);
-
-        VkBuffer stagingBuffer;
-        VkDeviceMemory stagingBufferMemory;
-        if (!CreateBuffer(vertexBufferSize,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for staging buffer\n");
-            return false;
-        }
-
-        if (!CreateBuffer(vertexBufferSize,
-                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                          window.device, window.physicalDevice,
-                          &app->meshPipeline.vertexBuffer, &app->meshPipeline.vertexBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for vertex buffer\n");
-            return false;
-        }
-
-        // Copy vertex data from CPU into memory-mapped staging buffer
-        void* data;
-        vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-
-        MemCopy(data, geometry.triangles.data, vertexBufferSize);
-
-        vkUnmapMemory(window.device, stagingBufferMemory);
-
-        // Copy vertex data from staging buffer into GPU vertex buffer
-        CopyBuffer(window.device, app->commandPool, window.graphicsQueue,
-                   stagingBuffer, app->meshPipeline.vertexBuffer, vertexBufferSize);
-
-        vkDestroyBuffer(window.device, stagingBuffer, nullptr);
-        vkFreeMemory(window.device, stagingBufferMemory, nullptr);
-    }
-
-    // Create lightmaps
-    {
-        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
-            const char* filePath = ToCString(AllocPrintf(&allocator, "data/lightmaps/%llu.png", i), &allocator);
-            int width, height, channels;
-            unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
-            if (imageData == NULL) {
-                LOG_ERROR("Failed to load lightmap: %s\n", filePath);
-                return false;
-            }
-            defer(stbi_image_free(imageData));
-
-            VulkanImage* lightmapImage = app->meshPipeline.lightmaps.Append();
-            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
-                                 width, height, channels, (const uint8*)imageData, lightmapImage)) {
-                LOG_ERROR("Failed to Vulkan image for lightmap %s\n", filePath);
-                return false;
-            }
-        }
-    }
-
-    // Create texture sampler
-    {
-        VkSamplerCreateInfo createInfo = {};
-        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        createInfo.magFilter = LIGHTMAP_TEXTURE_FILTER;
-        createInfo.minFilter = LIGHTMAP_TEXTURE_FILTER;
-        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        createInfo.anisotropyEnable = VK_FALSE;
-        createInfo.maxAnisotropy = 1.0f;
-        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        createInfo.unnormalizedCoordinates = VK_FALSE;
-        createInfo.compareEnable = VK_FALSE;
-        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        createInfo.mipLodBias = 0.0f;
-        createInfo.minLod = 0.0f;
-        createInfo.maxLod = 0.0f;
-
-        if (vkCreateSampler(window.device, &createInfo, nullptr, &app->meshPipeline.lightmapSampler) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateSampler failed\n");
-            return false;
-        }
-    }
-
-    // Create uniform buffer
-    {
-        VkDeviceSize uniformBufferSize = sizeof(UniformBufferObject);
-        if (!CreateBuffer(uniformBufferSize,
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          window.device, window.physicalDevice,
-                          &app->meshPipeline.uniformBuffer, &app->meshPipeline.uniformBufferMemory)) {
-            LOG_ERROR("CreateBuffer failed for uniform buffer\n");
-            return false;
-        }
-    }
-
-    // Create descriptor set layout
-    {
-        VkDescriptorSetLayoutBinding uboLayoutBinding = {};
-        uboLayoutBinding.binding = 0;
-        uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uboLayoutBinding.descriptorCount = 1;
-        uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        uboLayoutBinding.pImmutableSamplers = nullptr;
-
-        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-        samplerLayoutBinding.binding = 1;
-        samplerLayoutBinding.descriptorCount = 1;
-        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        samplerLayoutBinding.pImmutableSamplers = nullptr;
-        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        const VkDescriptorSetLayoutBinding bindings[] = { uboLayoutBinding, samplerLayoutBinding };
-
-        VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
-        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutCreateInfo.bindingCount = C_ARRAY_LENGTH(bindings);
-        layoutCreateInfo.pBindings = bindings;
-
-        if (vkCreateDescriptorSetLayout(window.device, &layoutCreateInfo, nullptr,
-                                        &app->meshPipeline.descriptorSetLayout) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDescriptorSetLayout failed\n");
-            return false;
-        }
-    }
-
-    // Create descriptor pool
-    {
-        VkDescriptorPoolSize poolSizes[2] = {};
-        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = geometry.meshEndInds.size;
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[1].descriptorCount = geometry.meshEndInds.size;
-
-        VkDescriptorPoolCreateInfo poolInfo = {};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = C_ARRAY_LENGTH(poolSizes);
-        poolInfo.pPoolSizes = poolSizes;
-        poolInfo.maxSets = geometry.meshEndInds.size;
-
-        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &app->meshPipeline.descriptorPool) != VK_SUCCESS) {
-            LOG_ERROR("vkCreateDescriptorPool failed\n");
-            return false;
-        }
-    }
-
-    // Create descriptor set
-    {
-        FixedArray<VkDescriptorSetLayout, VulkanMeshPipeline::MAX_LIGHTMAPS> layouts;
-        layouts.Clear();
-        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
-            layouts.Append(app->meshPipeline.descriptorSetLayout);
-        }
-
-        VkDescriptorSetAllocateInfo allocInfo = {};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = app->meshPipeline.descriptorPool;
-        allocInfo.descriptorSetCount = geometry.meshEndInds.size;
-        allocInfo.pSetLayouts = layouts.data;
-
-        if (vkAllocateDescriptorSets(window.device, &allocInfo, app->meshPipeline.descriptorSets.data) != VK_SUCCESS) {
-            LOG_ERROR("vkAllocateDescriptorSets failed\n");
-            return false;
-        }
-        app->meshPipeline.descriptorSets.size = geometry.meshEndInds.size;
-
-        for (uint32 i = 0; i < geometry.meshEndInds.size; i++) {
-            VkDescriptorBufferInfo bufferInfo = {};
-            bufferInfo.buffer = app->meshPipeline.uniformBuffer;
-            bufferInfo.offset = 0;
-            bufferInfo.range = sizeof(UniformBufferObject);
-
-            VkDescriptorImageInfo imageInfo = {};
-            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = app->meshPipeline.lightmaps[i].view;
-            imageInfo.sampler = app->meshPipeline.lightmapSampler;
-
-            VkWriteDescriptorSet descriptorWrites[2] = {};
-            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[0].dstSet = app->meshPipeline.descriptorSets[i];
-            descriptorWrites[0].dstBinding = 0;
-            descriptorWrites[0].dstArrayElement = 0;
-            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            descriptorWrites[0].descriptorCount = 1;
-            descriptorWrites[0].pBufferInfo = &bufferInfo;
-
-            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[1].dstSet = app->meshPipeline.descriptorSets[i];
-            descriptorWrites[1].dstBinding = 1;
-            descriptorWrites[1].dstArrayElement = 0;
-            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[1].descriptorCount = 1;
-            descriptorWrites[1].pImageInfo = &imageInfo;
-
-            vkUpdateDescriptorSets(window.device, C_ARRAY_LENGTH(descriptorWrites), descriptorWrites, 0, nullptr);
-        }
+    const bool meshPipeline = LoadMeshPipeline(window, app->commandPool, &allocator, &app->meshPipeline);
+    if (!meshPipeline) {
+        LOG_ERROR("Failed to load Vulkan mesh pipeline\n");
+        return false;
     }
 
     return true;
@@ -941,29 +1478,10 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
     const VkDevice& device = vulkanState.window.device;
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
 
-    app->meshPipeline.descriptorSets.Clear();
-    vkDestroyDescriptorPool(device, app->meshPipeline.descriptorPool, nullptr);
-    vkDestroyDescriptorSetLayout(device, app->meshPipeline.descriptorSetLayout, nullptr);
-
-    vkDestroyBuffer(device, app->meshPipeline.uniformBuffer, nullptr);
-    vkFreeMemory(device, app->meshPipeline.uniformBufferMemory, nullptr);
-
-    vkDestroySampler(device, app->meshPipeline.lightmapSampler, nullptr);
-
-    for (uint32 i = 0; i < app->meshPipeline.lightmaps.size; i++) {
-        vkDestroyImageView(device, app->meshPipeline.lightmaps[i].view, nullptr);
-        vkDestroyImage(device, app->meshPipeline.lightmaps[i].image, nullptr);
-        vkFreeMemory(device, app->meshPipeline.lightmaps[i].memory, nullptr);
-    }
-    app->meshPipeline.lightmaps.Clear();
-
-    vkDestroyBuffer(device, app->meshPipeline.vertexBuffer, nullptr);
-    vkFreeMemory(device, app->meshPipeline.vertexBufferMemory, nullptr);
-
-    app->meshPipeline.meshTriangleEndInds.Clear();
+    UnloadSpritePipeline(device, &app->spritePipeline);
+    UnloadMeshPipeline(device, &app->meshPipeline);
 
     vkDestroyFence(device, app->fence, nullptr);
-
     vkDestroyCommandPool(device, app->commandPool, nullptr);
 }
 
