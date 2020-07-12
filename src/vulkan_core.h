@@ -7,6 +7,8 @@
 #include <km_common/km_math.h>
 #include <km_common/km_memory.h>
 
+#include "vulkan_util.h"
+
 // Core Vulkan state, Should be initialized once in the entire application
 struct VulkanCore
 {
@@ -53,14 +55,6 @@ struct VulkanState
     VulkanSwapchain swapchain;
 };
 
-struct QueueFamilyInfo
-{
-    bool hasGraphicsFamily;
-    uint32_t graphicsFamilyIndex;
-    bool hasPresentFamily;
-    uint32_t presentFamilyIndex;
-};
-
 // Reloads (explicit unload & load) VulkanSwapchain and all dependent state
 bool ReloadVulkanSwapchain(VulkanState* state, Vec2Int size, LinearAllocator* allocator);
 
@@ -69,26 +63,3 @@ bool ReloadVulkanWindow(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2
 
 bool LoadVulkanState(VulkanState* state, HINSTANCE hInstance, HWND hWnd, Vec2Int size, LinearAllocator* allocator);
 void UnloadVulkanState(VulkanState* state);
-
-QueueFamilyInfo GetQueueFamilyInfo(VkSurfaceKHR surface, VkPhysicalDevice physicalDevice, LinearAllocator* allocator);
-
-bool CreateShaderModule(const Array<uint8> code, VkDevice device, VkShaderModule* shaderModule);
-
-bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryPropertyFlags,
-                  VkDevice device, VkPhysicalDevice physicalDevice, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
-
-void CopyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue queue,
-                VkBuffer src, VkBuffer dst, VkDeviceSize size);
-
-bool CreateImage(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t width, uint32_t height, VkFormat format,
-                 VkImageTiling tiling, VkImageUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags,
-                 VkImage* image, VkDeviceMemory* imageMemory);
-
-void TransitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue queue, VkImage image,
-                           VkImageLayout oldLayout, VkImageLayout newLayout);
-
-void CopyBufferToImage(VkDevice device, VkCommandPool commandPool, VkQueue queue,
-                       VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-
-bool CreateImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags,
-                     VkImageView* imageView);
