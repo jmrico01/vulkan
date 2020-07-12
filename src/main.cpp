@@ -428,7 +428,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         const VulkanTextPipeline& textPipeline = appState->vulkanAppState.textPipeline;
 
         const FontId fontId = FontId::OCR_A_REGULAR_18;
-        const_string testString = ToString("porto seguro\n\nthe quick brown fox jumps over the lazy dog");
+        const_string testString = ToString("porto seguro | the quick brown fox jumps over the lazy dog");
         const Vec2Int pos = { 100, 100 };
 
         LinearAllocator allocator(memory->transient);
@@ -505,6 +505,28 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     vkCmdBeginRenderPass(buffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+    // Submit commands for mesh pipeline
+    {
+        const VulkanMeshPipeline& meshPipeline = appState->vulkanAppState.meshPipeline;
+
+        vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipeline);
+
+        const VkBuffer vertexBuffers[] = { meshPipeline.vertexBuffer };
+        const VkDeviceSize offsets[] = { 0 };
+        vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
+
+        uint32 startTriangleInd = 0;
+        for (uint32 i = 0; i < meshPipeline.meshTriangleEndInds.size; i++) {
+            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipelineLayout, 0, 1,
+                                    &meshPipeline.descriptorSets[i], 0, nullptr);
+
+            const uint32 numTriangles = meshPipeline.meshTriangleEndInds[i] - startTriangleInd;
+            vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
+
+            startTriangleInd = meshPipeline.meshTriangleEndInds[i];
+        }
+    }
+
     // Submit commands for sprite pipeline
     {
         const VulkanSpritePipeline& spritePipeline = appState->vulkanAppState.spritePipeline;
@@ -546,28 +568,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 vkCmdDraw(buffer, 6, fontNumChars[i], 0, startInstance);
                 startInstance += fontNumChars[i];
             }
-        }
-    }
-
-    // Submit commands for mesh pipeline
-    {
-        const VulkanMeshPipeline& meshPipeline = appState->vulkanAppState.meshPipeline;
-
-        vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipeline);
-
-        const VkBuffer vertexBuffers[] = { meshPipeline.vertexBuffer };
-        const VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
-
-        uint32 startTriangleInd = 0;
-        for (uint32 i = 0; i < meshPipeline.meshTriangleEndInds.size; i++) {
-            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipelineLayout, 0, 1,
-                                    &meshPipeline.descriptorSets[i], 0, nullptr);
-
-            const uint32 numTriangles = meshPipeline.meshTriangleEndInds[i] - startTriangleInd;
-            vkCmdDraw(buffer, numTriangles * 3, 1, startTriangleInd * 3, 0);
-
-            startTriangleInd = meshPipeline.meshTriangleEndInds[i];
         }
     }
 
