@@ -5,7 +5,7 @@
 #include <km_common/km_input.h>
 
 #include "app_main.h"
-#include "vulkan.h"
+#include "vulkan_core.h"
 
 bool running_ = false;
 bool windowPropertiesChanged_ = false;

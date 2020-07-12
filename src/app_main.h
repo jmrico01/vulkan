@@ -5,7 +5,7 @@
 #include <km_common/km_input.h>
 #include <km_common/km_math.h>
 
-#include "vulkan.h"
+#include "vulkan_core.h"
 
 struct AppMemory
 {

@@ -10,7 +10,7 @@
 #include <km_common/km_debug.h>
 
 #include "load_font.h"
-#include "vulkan.h"
+#include "vulkan_core.h"
 
 enum class FontId
 {
@@ -69,7 +69,7 @@ struct VulkanSpritePipeline
 struct VulkanTextPipeline
 {
     static const uint32 MAX_FONTS = (uint32)FontId::COUNT;
-    static const uint32 MAX_CHARACTERS = 1024;
+    static const uint32 MAX_INSTANCES = 4096;
 
     FontFace fontFaces[MAX_FONTS];
 
@@ -130,4 +130,32 @@ struct AppState
     float32 totalElapsed;
     Vec3 cameraPos;
     Vec2 cameraAngles;
+};
+
+struct VulkanSpriteInstanceData
+{
+    Vec3 pos;
+    Vec2 size;
+};
+
+struct VulkanTextInstanceData
+{
+    Vec3 pos;
+    Vec2 size;
+    Vec4 uvInfo;
+};
+
+struct FrameState
+{
+    using SpriteInstanceData = FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>;
+    StaticArray<SpriteInstanceData, VulkanSpritePipeline::MAX_SPRITES> spriteInstanceData;
+
+    using TextInstanceData = FixedArray<VulkanTextInstanceData, VulkanTextPipeline::MAX_INSTANCES>;
+    StaticArray<TextInstanceData, VulkanTextPipeline::MAX_FONTS> textInstanceData;
+};
+
+struct TransientState
+{
+    FrameState frameState;
+    LargeArray<uint8> scratch;
 };

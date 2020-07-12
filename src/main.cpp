@@ -23,6 +23,133 @@ const int WINDOW_START_HEIGHT = 900;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(256);
 
+struct VulkanSpriteVertex
+{
+    Vec2 pos;
+    Vec2 uv;
+};
+
+struct VulkanMeshVertex
+{
+    Vec3 pos;
+    Vec3 normal;
+    Vec3 color;
+    Vec2 uv;
+    float32 lightmapWeight;
+};
+
+using VulkanMeshTriangle = StaticArray<VulkanMeshVertex, 3>;
+
+struct VulkanMeshGeometry
+{
+    bool valid;
+    Array<uint32> meshEndInds;
+    Array<VulkanMeshTriangle> triangles;
+};
+
+struct MeshUniformBufferObject
+{
+    alignas(16) Mat4 model;
+    alignas(16) Mat4 view;
+    alignas(16) Mat4 proj;
+};
+
+struct RectCoordsNdc
+{
+    Vec2 pos;
+    Vec2 size;
+};
+
+RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2Int screenSize)
+{
+	return RectCoordsNdc {
+        .pos = {
+            2.0f * pos.x / screenSize.x - 1.0f,
+            2.0f * pos.y / screenSize.y - 1.0f
+        },
+        .size = {
+            2.0f * size.x / screenSize.x,
+            2.0f * size.y / screenSize.y
+        },
+    };
+}
+
+RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2 anchor, Vec2Int screenSize)
+{
+	RectCoordsNdc result;
+	result.pos = { (float32)pos.x, (float32)pos.y };
+	result.size = { (float32)size.x, (float32)size.y };
+	result.pos.x -= anchor.x * result.size.x;
+	result.pos.y -= anchor.y * result.size.y;
+	result.pos.x = result.pos.x * 2.0f / screenSize.x - 1.0f;
+	result.pos.y = result.pos.y * 2.0f / screenSize.y - 1.0f;
+	result.size.x *= 2.0f / screenSize.x;
+	result.size.y *= 2.0f / screenSize.y;
+	return result;
+}
+
+void FontTextToInstanceData(const FontFace& fontFace, const_string text, Vec2Int pos, Vec2Int screenSize,
+                            VulkanTextInstanceData* instanceData)
+{
+    Vec2Int offset = Vec2Int::zero;
+    int ind = 0;
+    for (uint32 i = 0; i < text.size; i++) {
+        const uint32 ch = text[i];
+        const GlyphInfo& glyphInfo = fontFace.glyphInfo[ch];
+
+        const Vec2Int glyphPos = pos + offset + glyphInfo.offset;
+        const RectCoordsNdc ndc = ToRectCoordsNdc(glyphPos, glyphInfo.size, screenSize);
+
+        instanceData[ind].pos = ToVec3(ndc.pos, 0.0f);
+        instanceData[ind].size = ndc.size;
+        instanceData[ind].uvInfo = {
+            glyphInfo.uvOrigin.x, glyphInfo.uvOrigin.y,
+            glyphInfo.uvSize.x, glyphInfo.uvSize.y
+        };
+
+        offset += glyphInfo.advance / 64;
+        ind++;
+    }
+}
+
+void PushSprite(SpriteId spriteId, Vec2Int pos, Vec2Int size, float32 depth, Vec2Int screenSize, FrameState* frameState)
+{
+    const uint32 spriteIndex = (uint32)spriteId;
+
+    VulkanSpriteInstanceData* instanceData = frameState->spriteInstanceData[spriteIndex].Append();
+    const RectCoordsNdc ndc = ToRectCoordsNdc(pos, size, screenSize);
+    instanceData->pos = ToVec3(ndc.pos, depth);
+    instanceData->size = ndc.size;
+}
+
+void PushText(FontId fontId, const_string text, Vec2Int pos, float32 depth, Vec2Int screenSize,
+              const VulkanTextPipeline& textPipeline, FrameState* frameState)
+{
+    const uint32 fontIndex = (uint32)fontId;
+    const FontFace& fontFace = textPipeline.fontFaces[fontIndex];
+
+    Vec2Int offset = Vec2Int::zero;
+    int ind = 0;
+    for (uint32 i = 0; i < text.size; i++) {
+        const uint32 ch = text[i];
+        const GlyphInfo& glyphInfo = fontFace.glyphInfo[ch];
+
+        const Vec2Int glyphPos = pos + offset + glyphInfo.offset;
+        const RectCoordsNdc ndc = ToRectCoordsNdc(glyphPos, glyphInfo.size, screenSize);
+
+        VulkanTextInstanceData* instanceData = frameState->textInstanceData[fontIndex].Append();
+        instanceData->pos = ToVec3(ndc.pos, 0.0f);
+        instanceData->size = ndc.size;
+        instanceData->uvInfo = {
+            glyphInfo.uvOrigin.x, glyphInfo.uvOrigin.y,
+            glyphInfo.uvSize.x, glyphInfo.uvSize.y
+        };
+
+        offset += glyphInfo.advance / 64;
+        ind++;
+    }
+}
+
 bool LoadVulkanImage(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, VkCommandPool commandPool,
                      uint32 width, uint32 height, uint32 channels, const uint8* data, VulkanImage* image)
 {
@@ -88,109 +215,6 @@ bool LoadVulkanImage(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue q
 
     return true;
 }
-
-struct VulkanSpriteVertex
-{
-    Vec2 pos;
-    Vec2 uv;
-};
-
-struct VulkanSpriteInstanceData
-{
-    Vec3 pos;
-    Vec2 size;
-};
-
-struct VulkanTextInstanceData
-{
-    Vec3 pos;
-    Vec2 size;
-    Vec4 uvInfo;
-};
-
-struct RectCoordsNdc
-{
-    Vec3 pos;
-    Vec2 size;
-};
-
-RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2Int screenSize)
-{
-	return RectCoordsNdc {
-        .pos = {
-            2.0f * pos.x / screenSize.x - 1.0f,
-            2.0f * pos.y / screenSize.y - 1.0f,
-            0.0f
-        },
-        .size = {
-            2.0f * size.x / screenSize.x,
-            2.0f * size.y / screenSize.y
-        },
-    };
-}
-
-RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2 anchor, Vec2Int screenSize)
-{
-	RectCoordsNdc result;
-	result.pos = { (float32)pos.x, (float32)pos.y, 0.0f };
-	result.size = { (float32)size.x, (float32)size.y };
-	result.pos.x -= anchor.x * result.size.x;
-	result.pos.y -= anchor.y * result.size.y;
-	result.pos.x = result.pos.x * 2.0f / screenSize.x - 1.0f;
-	result.pos.y = result.pos.y * 2.0f / screenSize.y - 1.0f;
-	result.size.x *= 2.0f / screenSize.x;
-	result.size.y *= 2.0f / screenSize.y;
-	return result;
-}
-
-void FontTextToInstanceData(const FontFace& fontFace, const_string text, Vec2Int pos, Vec2Int screenSize,
-                            VulkanTextInstanceData* instanceData)
-{
-    Vec2Int offset = Vec2Int::zero;
-    int ind = 0;
-    for (uint32 i = 0; i < text.size; i++) {
-        const uint32 ch = text[i];
-        const GlyphInfo& glyphInfo = fontFace.glyphInfo[ch];
-
-        const Vec2Int glyphPos = pos + offset + glyphInfo.offset;
-        const RectCoordsNdc ndc = ToRectCoordsNdc(glyphPos, glyphInfo.size, screenSize);
-
-        instanceData[ind].pos = ndc.pos;
-        instanceData[ind].size = ndc.size;
-        instanceData[ind].uvInfo = {
-            glyphInfo.uvOrigin.x, glyphInfo.uvOrigin.y,
-            glyphInfo.uvSize.x, glyphInfo.uvSize.y
-        };
-
-        offset += glyphInfo.advance / 64;
-        ind++;
-    }
-}
-
-struct VulkanMeshVertex
-{
-    Vec3 pos;
-    Vec3 normal;
-    Vec3 color;
-    Vec2 uv;
-    float32 lightmapWeight;
-};
-
-using VulkanMeshTriangle = StaticArray<VulkanMeshVertex, 3>;
-
-struct VulkanMeshGeometry
-{
-    bool valid;
-    Array<uint32> meshEndInds;
-    Array<VulkanMeshTriangle> triangles;
-};
-
-struct MeshUniformBufferObject
-{
-    alignas(16) Mat4 model;
-    alignas(16) Mat4 view;
-    alignas(16) Mat4 proj;
-};
 
 VulkanMeshGeometry ObjToVulkanMeshGeometry(const LoadObjResult& obj, LinearAllocator* allocator)
 {
@@ -263,16 +287,30 @@ internal AppState* GetAppState(AppMemory* memory)
     return (AppState*)memory->permanent.data;
 }
 
+internal TransientState* GetTransientState(AppMemory* memory)
+{
+    DEBUG_ASSERT(sizeof(TransientState) < memory->transient.size);
+    TransientState* transientState = (TransientState*)memory->transient.data;
+    transientState->scratch = {
+        .size = memory->transient.size - sizeof(TransientState),
+        .data = memory->transient.data + sizeof(TransientState),
+    };
+    return transientState;
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(audio);
 
     AppState* appState = GetAppState(memory);
+    TransientState* transientState = GetTransientState(memory);
+
     const Vec2Int screenSize = {
         (int)vulkanState.swapchain.extent.width,
         (int)vulkanState.swapchain.extent.height
     };
 
+    // Initialize memory if necessary
     if (!memory->initialized) {
         appState->totalElapsed = 0.0f;
         appState->cameraPos = Vec3 { -1.0f, 0.0f, 1.0f };
@@ -281,8 +319,19 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         memory->initialized = true;
     }
 
+    // Reset frame state
+    {
+        for (uint32 i = 0; i < transientState->frameState.spriteInstanceData.SIZE; i++) {
+            transientState->frameState.spriteInstanceData[i].Clear();
+        }
+
+        for (uint32 i = 0; i < transientState->frameState.textInstanceData.SIZE; i++) {
+            transientState->frameState.textInstanceData[i].Clear();
+        }
+    }
+
     if (KeyPressed(input, KM_KEY_L)) {
-        LinearAllocator allocator(memory->transient);
+        LinearAllocator allocator(transientState->scratch);
 
         LoadObjResult obj;
         if (LoadObj(ToString("data/models/reference-scene-small.obj"), &obj, &allocator)) {
@@ -365,27 +414,16 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const float32 farZ = 50.0f;
     ubo.proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
-    struct VulkanSpriteDrawData
-    {
-        SpriteId id;
-        Vec3 pos;
-        Vec2 size;
-    };
-    FixedArray<VulkanSpriteDrawData, VulkanSpritePipeline::MAX_INSTANCES> spriteDrawData;
-    spriteDrawData.Clear();
-
     const uint32 NUM_JONS = 10;
     for (uint32 i = 0; i < NUM_JONS; i++) {
-        const Vec3 pos = { RandFloat32(-1.0f, 1.0f), RandFloat32(-1.0f, 1.0f), 0.5f };
-        const Vec2 size = { RandFloat32(0.1f, 0.2f), RandFloat32(0.1f, 0.2f) };
-        // spriteDrawData.Append({ SpriteId::JON, pos, size });
-
-        if (pos.x > 0.0f) {
-            Vec3 rockPos = pos;
-            rockPos.z = 0.2f;
-            // spriteDrawData.Append({ SpriteId::ROCK, rockPos, size});
-        }
+        const Vec2Int pos = { RandInt(0, screenSize.x), RandInt(0, screenSize.y) };
+        const Vec2Int size = { RandInt(50, 300), RandInt(50, 300) };
+        PushSprite(SpriteId::JON, pos, size, 0.5f, screenSize, &transientState->frameState);
     }
+
+    const_string text = ToString("the quick brown fox jumps over the lazy dog");
+    PushText(FontId::OCR_A_REGULAR_18, text, Vec2Int { 100, 100 }, 0.0f, screenSize,
+             appState->vulkanAppState.textPipeline, &transientState->frameState);
 
     // ================================================================================================
     // Vulkan rendering ===============================================================================
@@ -394,51 +432,72 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     // Copy sprite instance data to GPU
     StaticArray<uint32, VulkanSpritePipeline::MAX_SPRITES> spriteNumInstances;
     {
-        const VulkanSpritePipeline& spritePipeline = appState->vulkanAppState.spritePipeline;
+        const FrameState& frameState = transientState->frameState;
 
-        LinearAllocator allocator(memory->transient);
-        FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>* instanceData = allocator.New<FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>>();
-        instanceData->Clear();
-
-        for (uint32 i = 0; i < spriteNumInstances.SIZE; i++) {
-            spriteNumInstances[i] = 0;
-
-            for (uint32 j = 0; j < spriteDrawData.size; j++) {
-                const uint32 spriteIndex = (uint32)spriteDrawData[j].id;
-                if (spriteIndex != i) continue;
-
-                spriteNumInstances[i]++;
-                instanceData->Append({ .pos = spriteDrawData[j].pos, .size = spriteDrawData[j].size });
-            }
-
+        uint32 totalNumInstances = 0;
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            spriteNumInstances[i] = frameState.spriteInstanceData[i].size;
+            totalNumInstances += spriteNumInstances[i];
         }
 
-        if (instanceData->size > 0) {
+        if (totalNumInstances > VulkanSpritePipeline::MAX_INSTANCES) {
+            LOG_ERROR("Too many sprite instances: %lu, max %lu\n", totalNumInstances, VulkanSpritePipeline::MAX_INSTANCES);
+            // TODO what to do here?
+            DEBUG_PANIC("too many sprites!\n");
+        }
+
+        LinearAllocator allocator(transientState->scratch);
+
+        Array<VulkanSpriteInstanceData> instanceData = allocator.NewArray<VulkanSpriteInstanceData>(totalNumInstances);
+        uint32 instances = 0;
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            const uint32 numInstances = frameState.spriteInstanceData[i].size;
+            const uint32 numBytes = numInstances * sizeof(VulkanSpriteInstanceData);
+            MemCopy(instanceData.data + instances * sizeof(VulkanSpriteInstanceData),
+                    frameState.spriteInstanceData[i].data, numBytes);
+            instances += numInstances;
+        }
+
+        const VulkanSpritePipeline& spritePipeline = appState->vulkanAppState.spritePipeline;
+        if (instanceData.size > 0) {
             void* data;
-            const uint32 bufferSize = instanceData->size * sizeof(VulkanSpriteInstanceData);
+            const uint32 bufferSize = instanceData.size * sizeof(VulkanSpriteInstanceData);
             vkMapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory, 0, bufferSize, 0, &data);
-            MemCopy(data, instanceData->data, bufferSize);
+            MemCopy(data, instanceData.data, bufferSize);
             vkUnmapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory);
         }
     }
 
     // Copy text instance data to GPU
-    StaticArray<uint32, VulkanTextPipeline::MAX_FONTS> fontNumChars;
+    StaticArray<uint32, VulkanTextPipeline::MAX_FONTS> fontNumInstances;
     {
-        const VulkanTextPipeline& textPipeline = appState->vulkanAppState.textPipeline;
+        const FrameState& frameState = transientState->frameState;
 
-        const FontId fontId = FontId::OCR_A_REGULAR_18;
-        const_string testString = ToString("porto seguro | the quick brown fox jumps over the lazy dog");
-        const Vec2Int pos = { 100, 100 };
-
-        LinearAllocator allocator(memory->transient);
-        Array<VulkanTextInstanceData> instanceData = allocator.NewArray<VulkanTextInstanceData>(testString.size);
-        FontTextToInstanceData(textPipeline.fontFaces[(uint32)fontId], testString, pos, screenSize, instanceData.data);
-
-        for (uint32 i = 0; i < fontNumChars.SIZE; i++) {
-            fontNumChars[i] = i == (uint32)fontId ? testString.size : 0;
+        uint32 totalNumInstances = 0;
+        for (uint32 i = 0; i < VulkanTextPipeline::MAX_FONTS; i++) {
+            fontNumInstances[i] = frameState.textInstanceData[i].size;
+            totalNumInstances += fontNumInstances[i];
         }
 
+        if (totalNumInstances > VulkanTextPipeline::MAX_INSTANCES) {
+            LOG_ERROR("Too many text instances: %lu, max %lu\n", totalNumInstances, VulkanTextPipeline::MAX_INSTANCES);
+            // TODO what to do here?
+            DEBUG_PANIC("too many text instances (chars)!\n");
+        }
+
+        LinearAllocator allocator(transientState->scratch);
+
+        Array<VulkanTextInstanceData> instanceData = allocator.NewArray<VulkanTextInstanceData>(totalNumInstances);
+        uint32 instances = 0;
+        for (uint32 i = 0; i < VulkanTextPipeline::MAX_FONTS; i++) {
+            const uint32 numInstances = frameState.textInstanceData[i].size;
+            const uint32 numBytes = numInstances * sizeof(VulkanTextInstanceData);
+            MemCopy(instanceData.data + instances * sizeof(VulkanTextInstanceData),
+                    frameState.textInstanceData[i].data, numBytes);
+            instances += numInstances;
+        }
+
+        const VulkanTextPipeline& textPipeline = appState->vulkanAppState.textPipeline;
         if (instanceData.size > 0) {
             void* data;
             const uint32 bufferSize = instanceData.size * sizeof(VulkanTextInstanceData);
@@ -560,13 +619,13 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
 
         uint32 startInstance = 0;
-        for (uint32 i = 0; i < fontNumChars.SIZE; i++) {
+        for (uint32 i = 0; i < fontNumInstances.SIZE; i++) {
             vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline.pipelineLayout, 0, 1,
                                     &textPipeline.descriptorSets[i], 0, nullptr);
 
-            if (fontNumChars[i] > 0) {
-                vkCmdDraw(buffer, 6, fontNumChars[i], 0, startInstance);
-                startInstance += fontNumChars[i];
+            if (fontNumInstances[i] > 0) {
+                vkCmdDraw(buffer, 6, fontNumInstances[i], 0, startInstance);
+                startInstance += fontNumInstances[i];
             }
         }
     }
@@ -602,7 +661,8 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
     const VulkanSwapchain& swapchain = vulkanState.swapchain;
 
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
-    LinearAllocator allocator(memory->transient);
+    TransientState* transientState = GetTransientState(memory);
+    LinearAllocator allocator(transientState->scratch);
 
     // Create sprite pipeline
     {
@@ -1493,7 +1553,7 @@ bool LoadTextPipeline(const VulkanWindow& window, VkCommandPool commandPool, Lin
 
     // Create instance buffer
     {
-        const VkDeviceSize bufferSize = VulkanTextPipeline::MAX_CHARACTERS * sizeof(VulkanTextInstanceData);
+        const VkDeviceSize bufferSize = VulkanTextPipeline::MAX_INSTANCES * sizeof(VulkanTextInstanceData);
 
         if (!CreateBuffer(bufferSize,
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -1983,7 +2043,9 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
     const VulkanWindow& window = vulkanState.window;
 
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
-    LinearAllocator allocator(memory->transient);
+    TransientState* transientState = GetTransientState(memory);
+    LinearAllocator allocator(transientState->scratch);
+
 
     // Create command pool
     {
@@ -2064,7 +2126,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
 
 #include "lightmap.cpp"
 #include "load_font.cpp"
-#include "vulkan.cpp"
+#include "vulkan_core.cpp"
 
 #if GAME_WIN32
 #include "win32_main.cpp"
