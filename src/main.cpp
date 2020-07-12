@@ -13,6 +13,7 @@
 
 #include "app_main.h"
 #include "lightmap.h"
+#include "load_font.h"
 
 #define ENABLE_THREADS 1
 
@@ -96,9 +97,75 @@ struct VulkanSpriteVertex
 
 struct VulkanSpriteInstanceData
 {
-    Vec2 origin;
+    Vec3 pos;
     Vec2 size;
 };
+
+struct VulkanTextInstanceData
+{
+    Vec3 pos;
+    Vec2 size;
+    Vec4 uvInfo;
+};
+
+struct RectCoordsNdc
+{
+    Vec3 pos;
+    Vec2 size;
+};
+
+RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2Int screenSize)
+{
+	return RectCoordsNdc {
+        .pos = {
+            2.0f * pos.x / screenSize.x - 1.0f,
+            2.0f * pos.y / screenSize.y - 1.0f,
+            0.0f
+        },
+        .size = {
+            2.0f * size.x / screenSize.x,
+            2.0f * size.y / screenSize.y
+        },
+    };
+}
+
+RectCoordsNdc ToRectCoordsNdc(Vec2Int pos, Vec2Int size, Vec2 anchor, Vec2Int screenSize)
+{
+	RectCoordsNdc result;
+	result.pos = { (float32)pos.x, (float32)pos.y, 0.0f };
+	result.size = { (float32)size.x, (float32)size.y };
+	result.pos.x -= anchor.x * result.size.x;
+	result.pos.y -= anchor.y * result.size.y;
+	result.pos.x = result.pos.x * 2.0f / screenSize.x - 1.0f;
+	result.pos.y = result.pos.y * 2.0f / screenSize.y - 1.0f;
+	result.size.x *= 2.0f / screenSize.x;
+	result.size.y *= 2.0f / screenSize.y;
+	return result;
+}
+
+void FontTextToInstanceData(const FontFace& fontFace, const_string text, Vec2Int pos, Vec2Int screenSize,
+                            VulkanTextInstanceData* instanceData)
+{
+    Vec2Int offset = Vec2Int::zero;
+    int ind = 0;
+    for (uint32 i = 0; i < text.size; i++) {
+        const uint32 ch = text[i];
+        const GlyphInfo& glyphInfo = fontFace.glyphInfo[ch];
+
+        const Vec2Int glyphPos = pos + offset + glyphInfo.offset;
+        const RectCoordsNdc ndc = ToRectCoordsNdc(glyphPos, glyphInfo.size, screenSize);
+
+        instanceData[ind].pos = ndc.pos;
+        instanceData[ind].size = ndc.size;
+        instanceData[ind].uvInfo = {
+            glyphInfo.uvOrigin.x, glyphInfo.uvOrigin.y,
+            glyphInfo.uvSize.x, glyphInfo.uvSize.y
+        };
+
+        offset += glyphInfo.advance / 64;
+        ind++;
+    }
+}
 
 struct VulkanMeshVertex
 {
@@ -301,7 +368,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     struct VulkanSpriteDrawData
     {
         SpriteId id;
-        Vec2 origin;
+        Vec3 pos;
         Vec2 size;
     };
     FixedArray<VulkanSpriteDrawData, VulkanSpritePipeline::MAX_INSTANCES> spriteDrawData;
@@ -309,9 +376,15 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     const uint32 NUM_JONS = 10;
     for (uint32 i = 0; i < NUM_JONS; i++) {
-        const Vec2 origin = { RandFloat32(-1.0f, 1.0f), RandFloat32(-1.0f, 1.0f) };
+        const Vec3 pos = { RandFloat32(-1.0f, 1.0f), RandFloat32(-1.0f, 1.0f), 0.5f };
         const Vec2 size = { RandFloat32(0.1f, 0.2f), RandFloat32(0.1f, 0.2f) };
-        spriteDrawData.Append({ SpriteId::JON, origin, size });
+        // spriteDrawData.Append({ SpriteId::JON, pos, size });
+
+        if (pos.x > 0.0f) {
+            Vec3 rockPos = pos;
+            rockPos.z = 0.2f;
+            // spriteDrawData.Append({ SpriteId::ROCK, rockPos, size});
+        }
     }
 
     // ================================================================================================
@@ -335,16 +408,44 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 if (spriteIndex != i) continue;
 
                 spriteNumInstances[i]++;
-                instanceData->Append({ .origin = spriteDrawData[j].origin, .size = spriteDrawData[j].size });
+                instanceData->Append({ .pos = spriteDrawData[j].pos, .size = spriteDrawData[j].size });
             }
 
         }
 
-        void* data;
-        const uint32 bufferSize = instanceData->size * sizeof(VulkanSpriteInstanceData);
-        vkMapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory, 0, bufferSize, 0, &data);
-        MemCopy(data, instanceData->data, bufferSize);
-        vkUnmapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory);
+        if (instanceData->size > 0) {
+            void* data;
+            const uint32 bufferSize = instanceData->size * sizeof(VulkanSpriteInstanceData);
+            vkMapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory, 0, bufferSize, 0, &data);
+            MemCopy(data, instanceData->data, bufferSize);
+            vkUnmapMemory(vulkanState.window.device, spritePipeline.instanceBufferMemory);
+        }
+    }
+
+    // Copy text instance data to GPU
+    StaticArray<uint32, VulkanTextPipeline::MAX_FONTS> fontNumChars;
+    {
+        const VulkanTextPipeline& textPipeline = appState->vulkanAppState.textPipeline;
+
+        const FontId fontId = FontId::OCR_A_REGULAR_18;
+        const_string testString = ToString("porto seguro\n\nthe quick brown fox jumps over the lazy dog");
+        const Vec2Int pos = { 100, 100 };
+
+        LinearAllocator allocator(memory->transient);
+        Array<VulkanTextInstanceData> instanceData = allocator.NewArray<VulkanTextInstanceData>(testString.size);
+        FontTextToInstanceData(textPipeline.fontFaces[(uint32)fontId], testString, pos, screenSize, instanceData.data);
+
+        for (uint32 i = 0; i < fontNumChars.SIZE; i++) {
+            fontNumChars[i] = i == (uint32)fontId ? testString.size : 0;
+        }
+
+        if (instanceData.size > 0) {
+            void* data;
+            const uint32 bufferSize = instanceData.size * sizeof(VulkanTextInstanceData);
+            vkMapMemory(vulkanState.window.device, textPipeline.instanceBufferMemory, 0, bufferSize, 0, &data);
+            MemCopy(data, instanceData.data, bufferSize);
+            vkUnmapMemory(vulkanState.window.device, textPipeline.instanceBufferMemory);
+        }
     }
 
     // Copy mesh uniform buffer data to GPU
@@ -419,8 +520,32 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, spritePipeline.pipelineLayout, 0, 1,
                                     &spritePipeline.descriptorSets[i], 0, nullptr);
 
-            vkCmdDraw(buffer, 6, spriteNumInstances[i], 0, startInstance);
-            startInstance += spriteNumInstances[i];
+            if (spriteNumInstances[i] > 0) {
+                vkCmdDraw(buffer, 6, spriteNumInstances[i], 0, startInstance);
+                startInstance += spriteNumInstances[i];
+            }
+        }
+    }
+
+    // Submit commands for text pipeline
+    {
+        const VulkanTextPipeline& textPipeline = appState->vulkanAppState.textPipeline;
+
+        vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline.pipeline);
+
+        const VkBuffer vertexBuffers[] = { textPipeline.vertexBuffer, textPipeline.instanceBuffer };
+        const VkDeviceSize offsets[] = { 0, 0 };
+        vkCmdBindVertexBuffers(buffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
+
+        uint32 startInstance = 0;
+        for (uint32 i = 0; i < fontNumChars.SIZE; i++) {
+            vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline.pipelineLayout, 0, 1,
+                                    &textPipeline.descriptorSets[i], 0, nullptr);
+
+            if (fontNumChars[i] > 0) {
+                vkCmdDraw(buffer, 6, fontNumChars[i], 0, startInstance);
+                startInstance += fontNumChars[i];
+            }
         }
     }
 
@@ -546,8 +671,8 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
 
         attributeDescriptions[2].binding = 1;
         attributeDescriptions[2].location = 2;
-        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(VulkanSpriteInstanceData, origin);
+        attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(VulkanSpriteInstanceData, pos);
 
         attributeDescriptions[3].binding = 1;
         attributeDescriptions[3].location = 3;
@@ -609,9 +734,9 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_FALSE;
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
         colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -671,6 +796,208 @@ APP_LOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppLoadVulkanSwapchainState)
 
         if (vkCreateGraphicsPipelines(window.device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr,
                                       &app->spritePipeline.pipeline) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateGraphicsPipeline failed\n");
+            return false;
+        }
+    }
+
+    // Create text pipeline
+    {
+        const Array<uint8> vertShaderCode = LoadEntireFile(ToString("data/shaders/text.vert.spv"), &allocator);
+        if (vertShaderCode.data == nullptr) {
+            LOG_ERROR("Failed to load vertex shader code\n");
+            return false;
+        }
+        const Array<uint8> fragShaderCode = LoadEntireFile(ToString("data/shaders/text.frag.spv"), &allocator);
+        if (fragShaderCode.data == nullptr) {
+            LOG_ERROR("Failed to load fragment shader code\n");
+            return false;
+        }
+
+        VkShaderModule vertShaderModule;
+        if (!CreateShaderModule(vertShaderCode, window.device, &vertShaderModule)) {
+            LOG_ERROR("Failed to create vertex shader module\n");
+            return false;
+        }
+        defer(vkDestroyShaderModule(window.device, vertShaderModule, nullptr));
+
+        VkShaderModule fragShaderModule;
+        if (!CreateShaderModule(fragShaderCode, window.device, &fragShaderModule)) {
+            LOG_ERROR("Failed to create fragment shader module\n");
+            return false;
+        }
+        defer(vkDestroyShaderModule(window.device, fragShaderModule, nullptr));
+
+        VkPipelineShaderStageCreateInfo vertShaderStageCreateInfo = {};
+        vertShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageCreateInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageCreateInfo.module = vertShaderModule;
+        vertShaderStageCreateInfo.pName = "main";
+        // vertShaderStageCreateInfo.pSpecializationInfo is useful for setting shader constants
+
+        VkPipelineShaderStageCreateInfo fragShaderStageCreateInfo = {};
+        fragShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageCreateInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageCreateInfo.module = fragShaderModule;
+        fragShaderStageCreateInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo };
+
+        VkVertexInputBindingDescription bindingDescriptions[2] = {};
+        VkVertexInputAttributeDescription attributeDescriptions[5] = {};
+
+        // Per-vertex attribute bindings
+        bindingDescriptions[0].binding = 0;
+        bindingDescriptions[0].stride = sizeof(VulkanSpriteVertex);
+        bindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(VulkanSpriteVertex, pos);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(VulkanSpriteVertex, uv);
+
+        // Per-instance attribute bindings
+        bindingDescriptions[1].binding = 1;
+        bindingDescriptions[1].stride = sizeof(VulkanTextInstanceData);
+        bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+        attributeDescriptions[2].binding = 1;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(VulkanTextInstanceData, pos);
+
+        attributeDescriptions[3].binding = 1;
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(VulkanTextInstanceData, size);
+
+        attributeDescriptions[4].binding = 1;
+        attributeDescriptions[4].location = 4;
+        attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[4].offset = offsetof(VulkanTextInstanceData, uvInfo);
+
+        VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
+        vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputCreateInfo.vertexBindingDescriptionCount = C_ARRAY_LENGTH(bindingDescriptions);
+        vertexInputCreateInfo.pVertexBindingDescriptions = bindingDescriptions;
+        vertexInputCreateInfo.vertexAttributeDescriptionCount = C_ARRAY_LENGTH(attributeDescriptions);
+        vertexInputCreateInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {};
+        inputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssemblyCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssemblyCreateInfo.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport = {};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float32)swapchain.extent.width;
+        viewport.height = (float32)swapchain.extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor = {};
+        scissor.offset = { 0, 0 };
+        scissor.extent = swapchain.extent;
+
+        VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {};
+        viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportStateCreateInfo.viewportCount = 1;
+        viewportStateCreateInfo.pViewports = &viewport;
+        viewportStateCreateInfo.scissorCount = 1;
+        viewportStateCreateInfo.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizerCreateInfo = {};
+        rasterizerCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizerCreateInfo.depthClampEnable = VK_FALSE;
+        rasterizerCreateInfo.rasterizerDiscardEnable = VK_FALSE;
+        rasterizerCreateInfo.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizerCreateInfo.lineWidth = 1.0f;
+        rasterizerCreateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizerCreateInfo.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizerCreateInfo.depthBiasEnable = VK_FALSE;
+        rasterizerCreateInfo.depthBiasConstantFactor = 0.0f;
+        rasterizerCreateInfo.depthBiasClamp = 0.0f;
+        rasterizerCreateInfo.depthBiasSlopeFactor = 0.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisampleCreateInfo = {};
+        multisampleCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampleCreateInfo.sampleShadingEnable = VK_FALSE;
+        multisampleCreateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampleCreateInfo.minSampleShading = 1.0f;
+        multisampleCreateInfo.pSampleMask = nullptr;
+        multisampleCreateInfo.alphaToCoverageEnable = VK_FALSE;
+        multisampleCreateInfo.alphaToOneEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+        VkPipelineColorBlendStateCreateInfo colorBlendingCreateInfo = {};
+        colorBlendingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlendingCreateInfo.logicOpEnable = VK_FALSE;
+        colorBlendingCreateInfo.logicOp = VK_LOGIC_OP_COPY;
+        colorBlendingCreateInfo.attachmentCount = 1;
+        colorBlendingCreateInfo.pAttachments = &colorBlendAttachment;
+        colorBlendingCreateInfo.blendConstants[0] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[1] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[2] = 0.0f;
+        colorBlendingCreateInfo.blendConstants[3] = 0.0f;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo = {};
+        depthStencilCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencilCreateInfo.depthTestEnable = VK_TRUE;
+        depthStencilCreateInfo.depthWriteEnable = VK_TRUE;
+        depthStencilCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencilCreateInfo.depthBoundsTestEnable = VK_FALSE;
+        depthStencilCreateInfo.minDepthBounds = 0.0f; // disabled
+        depthStencilCreateInfo.maxDepthBounds = 1.0f; // disabled
+        depthStencilCreateInfo.stencilTestEnable = VK_FALSE;
+
+        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutCreateInfo.setLayoutCount = 1;
+        pipelineLayoutCreateInfo.pSetLayouts = &app->textPipeline.descriptorSetLayout;
+        pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+        pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+
+        if (vkCreatePipelineLayout(window.device, &pipelineLayoutCreateInfo, nullptr,
+                                   &app->textPipeline.pipelineLayout) != VK_SUCCESS) {
+            LOG_ERROR("vkCreatePipelineLayout failed\n");
+            return false;
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineCreateInfo = {};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stageCount = C_ARRAY_LENGTH(shaderStages);
+        pipelineCreateInfo.pStages = shaderStages;
+        pipelineCreateInfo.pVertexInputState = &vertexInputCreateInfo;
+        pipelineCreateInfo.pInputAssemblyState = &inputAssemblyCreateInfo;
+        pipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
+        pipelineCreateInfo.pRasterizationState = &rasterizerCreateInfo;
+        pipelineCreateInfo.pMultisampleState = &multisampleCreateInfo;
+        pipelineCreateInfo.pDepthStencilState = &depthStencilCreateInfo;
+        pipelineCreateInfo.pColorBlendState = &colorBlendingCreateInfo;
+        pipelineCreateInfo.pDynamicState = nullptr;
+        pipelineCreateInfo.layout = app->textPipeline.pipelineLayout;
+        pipelineCreateInfo.renderPass = swapchain.renderPass;
+        pipelineCreateInfo.subpass = 0;
+        pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+        pipelineCreateInfo.basePipelineIndex = -1;
+
+        if (vkCreateGraphicsPipelines(window.device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr,
+                                      &app->textPipeline.pipeline) != VK_SUCCESS) {
             LOG_ERROR("vkCreateGraphicsPipeline failed\n");
             return false;
         }
@@ -884,6 +1211,9 @@ APP_UNLOAD_VULKAN_SWAPCHAIN_STATE_FUNCTION(AppUnloadVulkanSwapchainState)
     vkDestroyPipeline(device, app->meshPipeline.pipeline, nullptr);
     vkDestroyPipelineLayout(device, app->meshPipeline.pipelineLayout, nullptr);
 
+    vkDestroyPipeline(device, app->textPipeline.pipeline, nullptr);
+    vkDestroyPipelineLayout(device, app->textPipeline.pipelineLayout, nullptr);
+
     vkDestroyPipeline(device, app->spritePipeline.pipeline, nullptr);
     vkDestroyPipelineLayout(device, app->spritePipeline.pipelineLayout, nullptr);
 }
@@ -895,7 +1225,7 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
 
     // Create vertex buffer
     {
-        const VulkanSpriteVertex SPRITE_VERTICES[] = {
+        const VulkanSpriteVertex VERTICES[] = {
             { { 0.0f, 0.0f }, { 0.0f, 0.0f } },
             { { 1.0f, 0.0f }, { 1.0f, 0.0f } },
             { { 1.0f, 1.0f }, { 1.0f, 1.0f } },
@@ -905,7 +1235,7 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
             { { 0.0f, 0.0f }, { 0.0f, 0.0f } },
         };
 
-        const VkDeviceSize vertexBufferSize = C_ARRAY_LENGTH(SPRITE_VERTICES) * sizeof(VulkanSpriteVertex);
+        const VkDeviceSize vertexBufferSize = C_ARRAY_LENGTH(VERTICES) * sizeof(VulkanSpriteVertex);
 
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -921,7 +1251,7 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
         void* data;
         vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
 
-        MemCopy(data, SPRITE_VERTICES, vertexBufferSize);
+        MemCopy(data, VERTICES, vertexBufferSize);
 
         vkUnmapMemory(window.device, stagingBufferMemory);
 
@@ -958,25 +1288,29 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
 
     // Create sprites
     {
-        spritePipeline->sprites.size = VulkanSpritePipeline::MAX_SPRITES;
+        const char* spriteFilePaths[] = {
+            "data/sprites/jon.png",
+            "data/sprites/rock.png"
+        };
 
-        const char* filePath = "data/sprites/jon.png";
-        int width, height, channels;
-        unsigned char* imageData = stbi_load(filePath, &width, &height, &channels, 0);
-        if (imageData == NULL) {
-            LOG_ERROR("Failed to load sprite: %s\n", filePath);
-            return false;
-        }
-        defer(stbi_image_free(imageData));
+        for (int i = 0; i < C_ARRAY_LENGTH(spriteFilePaths); i++) {
+            int width, height, channels;
+            unsigned char* imageData = stbi_load(spriteFilePaths[i], &width, &height, &channels, 0);
+            if (imageData == NULL) {
+                LOG_ERROR("Failed to load sprite: %s\n", spriteFilePaths[i]);
+                return false;
+            }
+            defer(stbi_image_free(imageData));
 
-        if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, commandPool, width, height,
-                             channels, (const uint8*)imageData, &spritePipeline->sprites[(uint32)SpriteId::JON])) {
-            LOG_ERROR("Failed to Vulkan image for sprite %s\n", filePath);
-            return false;
+            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, commandPool, width, height,
+                                 channels, (const uint8*)imageData, &spritePipeline->sprites[i])) {
+                LOG_ERROR("Failed to Vulkan image for sprite %s\n", spriteFilePaths[i]);
+                return false;
+            }
         }
     }
 
-    // Create lightmap sampler
+    // Create texture sampler
     {
         VkSamplerCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1055,11 +1389,10 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
         allocInfo.descriptorSetCount = VulkanSpritePipeline::MAX_SPRITES;
         allocInfo.pSetLayouts = layouts.data;
 
-        if (vkAllocateDescriptorSets(window.device, &allocInfo, spritePipeline->descriptorSets.data) != VK_SUCCESS) {
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, spritePipeline->descriptorSets) != VK_SUCCESS) {
             LOG_ERROR("vkAllocateDescriptorSets failed\n");
             return false;
         }
-        spritePipeline->descriptorSets.size = VulkanSpritePipeline::MAX_SPRITES;
 
         for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
             VkDescriptorImageInfo imageInfo = {};
@@ -1085,24 +1418,261 @@ bool LoadSpritePipeline(const VulkanWindow& window, VkCommandPool commandPool, L
 
 void UnloadSpritePipeline(VkDevice device, VulkanSpritePipeline* spritePipeline)
 {
-    spritePipeline->descriptorSets.Clear();
     vkDestroyDescriptorPool(device, spritePipeline->descriptorPool, nullptr);
     vkDestroyDescriptorSetLayout(device, spritePipeline->descriptorSetLayout, nullptr);
 
     vkDestroySampler(device, spritePipeline->spriteSampler, nullptr);
 
-    for (uint32 i = 0; i < spritePipeline->sprites.size; i++) {
+    for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
         vkDestroyImageView(device, spritePipeline->sprites[i].view, nullptr);
         vkDestroyImage(device, spritePipeline->sprites[i].image, nullptr);
         vkFreeMemory(device, spritePipeline->sprites[i].memory, nullptr);
     }
-    spritePipeline->sprites.Clear();
 
     vkDestroyBuffer(device, spritePipeline->instanceBuffer, nullptr);
     vkFreeMemory(device, spritePipeline->instanceBufferMemory, nullptr);
 
     vkDestroyBuffer(device, spritePipeline->vertexBuffer, nullptr);
     vkFreeMemory(device, spritePipeline->vertexBufferMemory, nullptr);
+}
+
+bool LoadTextPipeline(const VulkanWindow& window, VkCommandPool commandPool, LinearAllocator* allocator,
+                      VulkanTextPipeline* textPipeline)
+{
+    UNREFERENCED_PARAMETER(allocator);
+
+    // Create vertex buffer
+    {
+        // NOTE: text pipeline uses the same vertex data format as the sprite pipeline
+        const VulkanSpriteVertex VERTICES[] = {
+            { { 0.0f,  0.0f }, { 0.0f, 1.0f } },
+            { { 0.0f, -1.0f }, { 0.0f, 0.0f } },
+            { { 1.0f, -1.0f }, { 1.0f, 0.0f } },
+
+            { { 1.0f, -1.0f }, { 1.0f, 0.0f } },
+            { { 1.0f,  0.0f }, { 1.0f, 1.0f } },
+            { { 0.0f,  0.0f }, { 0.0f, 1.0f } },
+        };
+
+        const VkDeviceSize vertexBufferSize = C_ARRAY_LENGTH(VERTICES) * sizeof(VulkanSpriteVertex);
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice, &stagingBuffer, &stagingBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for staging buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from CPU into memory-mapped staging buffer
+        void* data;
+        vkMapMemory(window.device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
+
+        MemCopy(data, VERTICES, vertexBufferSize);
+
+        vkUnmapMemory(window.device, stagingBufferMemory);
+
+        if (!CreateBuffer(vertexBufferSize,
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          window.device, window.physicalDevice,
+                          &textPipeline->vertexBuffer, &textPipeline->vertexBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for vertex buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from staging buffer into GPU vertex buffer
+        CopyBuffer(window.device, commandPool, window.graphicsQueue,
+                   stagingBuffer, textPipeline->vertexBuffer, vertexBufferSize);
+
+        vkDestroyBuffer(window.device, stagingBuffer, nullptr);
+        vkFreeMemory(window.device, stagingBufferMemory, nullptr);
+    }
+
+    // Create instance buffer
+    {
+        const VkDeviceSize bufferSize = VulkanTextPipeline::MAX_CHARACTERS * sizeof(VulkanTextInstanceData);
+
+        if (!CreateBuffer(bufferSize,
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          window.device, window.physicalDevice,
+                          &textPipeline->instanceBuffer, &textPipeline->instanceBufferMemory)) {
+            LOG_ERROR("CreateBuffer failed for instance buffer\n");
+            return false;
+        }
+    }
+
+    // Load font faces
+    StaticArray<LoadFontFaceResult, VulkanTextPipeline::MAX_FONTS> fontFaces;
+    {
+        struct FontData {
+            const_string filePath;
+            uint32 height;
+        };
+        const FontData fontData[] = {
+            { ToString("data/fonts/ocr-a/regular.ttf"), 18 },
+            { ToString("data/fonts/ocr-a/regular.ttf"), 24 },
+        };
+
+        FT_Library ftLibrary;
+        FT_Error error = FT_Init_FreeType(&ftLibrary);
+        if (error) {
+            LOG_ERROR("FreeType init error: %d\n", error);
+            return false;
+        }
+
+        for (uint32 i = 0; i < C_ARRAY_LENGTH(fontData); i++) {
+            if (!LoadFontFace(ftLibrary, fontData[i].filePath, fontData[i].height, allocator, &fontFaces[i])) {
+                LOG_ERROR("Failed to load font face at %.*s\n", fontData[i].filePath.size, fontData[i].filePath.data);
+                return false;
+            }
+        }
+
+        for (uint32 i = 0; i < fontFaces.SIZE; i++) {
+            textPipeline->fontFaces[i].height = fontFaces[i].height;
+            textPipeline->fontFaces[i].glyphInfo.FromArray(fontFaces[i].glyphInfo);
+        }
+    }
+
+    // Create atlases
+    {
+        for (uint32 i = 0; i < fontFaces.SIZE; i++) {
+            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, commandPool,
+                                 fontFaces[i].atlasWidth, fontFaces[i].atlasHeight, 1, fontFaces[i].atlasData,
+                                 &textPipeline->atlases[i])) {
+                LOG_ERROR("Failed to Vulkan image for font atlas %lu\n", i);
+                return false;
+            }
+        }
+    }
+
+    // Create texture sampler
+    {
+        VkSamplerCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        createInfo.magFilter = VK_FILTER_LINEAR;
+        createInfo.minFilter = VK_FILTER_LINEAR;
+        createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        createInfo.anisotropyEnable = VK_FALSE;
+        createInfo.maxAnisotropy = 1.0f;
+        createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        createInfo.unnormalizedCoordinates = VK_FALSE;
+        createInfo.compareEnable = VK_FALSE;
+        createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        createInfo.mipLodBias = 0.0f;
+        createInfo.minLod = 0.0f;
+        createInfo.maxLod = 0.0f;
+
+        if (vkCreateSampler(window.device, &createInfo, nullptr, &textPipeline->atlasSampler) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateSampler failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set layout
+    {
+        VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+        samplerLayoutBinding.binding = 0;
+        samplerLayoutBinding.descriptorCount = 1;
+        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        samplerLayoutBinding.pImmutableSamplers = nullptr;
+        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
+        layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutCreateInfo.bindingCount = 1;
+        layoutCreateInfo.pBindings = &samplerLayoutBinding;
+
+        if (vkCreateDescriptorSetLayout(window.device, &layoutCreateInfo, nullptr,
+                                        &textPipeline->descriptorSetLayout) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorSetLayout failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor pool
+    {
+        VkDescriptorPoolSize poolSize = {};
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = VulkanSpritePipeline::MAX_SPRITES;
+
+        VkDescriptorPoolCreateInfo poolInfo = {};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = VulkanSpritePipeline::MAX_SPRITES;
+
+        if (vkCreateDescriptorPool(window.device, &poolInfo, nullptr, &textPipeline->descriptorPool) != VK_SUCCESS) {
+            LOG_ERROR("vkCreateDescriptorPool failed\n");
+            return false;
+        }
+    }
+
+    // Create descriptor set
+    {
+        FixedArray<VkDescriptorSetLayout, VulkanSpritePipeline::MAX_SPRITES> layouts;
+        layouts.size = VulkanSpritePipeline::MAX_SPRITES;
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            layouts[i] = textPipeline->descriptorSetLayout;
+        }
+
+        VkDescriptorSetAllocateInfo allocInfo = {};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = textPipeline->descriptorPool;
+        allocInfo.descriptorSetCount = VulkanSpritePipeline::MAX_SPRITES;
+        allocInfo.pSetLayouts = layouts.data;
+
+        if (vkAllocateDescriptorSets(window.device, &allocInfo, textPipeline->descriptorSets) != VK_SUCCESS) {
+            LOG_ERROR("vkAllocateDescriptorSets failed\n");
+            return false;
+        }
+
+        for (uint32 i = 0; i < VulkanSpritePipeline::MAX_SPRITES; i++) {
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = textPipeline->atlases[i].view;
+            imageInfo.sampler = textPipeline->atlasSampler;
+
+            VkWriteDescriptorSet descriptorWrite = {};
+            descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrite.dstSet = textPipeline->descriptorSets[i];
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
+
+            vkUpdateDescriptorSets(window.device, 1, &descriptorWrite, 0, nullptr);
+        }
+    }
+
+    return true;
+}
+
+void UnloadTextPipeline(VkDevice device, VulkanTextPipeline* textPipeline)
+{
+    vkDestroyDescriptorPool(device, textPipeline->descriptorPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, textPipeline->descriptorSetLayout, nullptr);
+
+    vkDestroySampler(device, textPipeline->atlasSampler, nullptr);
+
+    for (uint32 i = 0; i < VulkanTextPipeline::MAX_FONTS; i++) {
+        vkDestroyImageView(device, textPipeline->atlases[i].view, nullptr);
+        vkDestroyImage(device, textPipeline->atlases[i].image, nullptr);
+        vkFreeMemory(device, textPipeline->atlases[i].memory, nullptr);
+    }
+
+    vkDestroyBuffer(device, textPipeline->instanceBuffer, nullptr);
+    vkFreeMemory(device, textPipeline->instanceBufferMemory, nullptr);
+
+    vkDestroyBuffer(device, textPipeline->vertexBuffer, nullptr);
+    vkFreeMemory(device, textPipeline->vertexBufferMemory, nullptr);
 }
 
 bool LoadMeshPipeline(const VulkanWindow& window, VkCommandPool commandPool, LinearAllocator* allocator,
@@ -1462,6 +2032,12 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
         return false;
     }
 
+    const bool textPipeline = LoadTextPipeline(window, app->commandPool, &allocator, &app->textPipeline);
+    if (!textPipeline) {
+        LOG_ERROR("Failed to load Vulkan text pipeline\n");
+        return false;
+    }
+
     const bool meshPipeline = LoadMeshPipeline(window, app->commandPool, &allocator, &app->meshPipeline);
     if (!meshPipeline) {
         LOG_ERROR("Failed to load Vulkan mesh pipeline\n");
@@ -1479,6 +2055,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
     VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
 
     UnloadSpritePipeline(device, &app->spritePipeline);
+    UnloadTextPipeline(device, &app->textPipeline);
     UnloadMeshPipeline(device, &app->meshPipeline);
 
     vkDestroyFence(device, app->fence, nullptr);
@@ -1486,6 +2063,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
 }
 
 #include "lightmap.cpp"
+#include "load_font.cpp"
 #include "vulkan.cpp"
 
 #if GAME_WIN32

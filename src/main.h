@@ -9,6 +9,7 @@
 #include <km_common/km_array.h>
 #include <km_common/km_debug.h>
 
+#include "load_font.h"
 #include "vulkan.h"
 
 enum class FontId
@@ -22,8 +23,17 @@ enum class FontId
 enum class SpriteId
 {
     JON,
+    ROCK,
 
     COUNT
+};
+
+struct FontFace
+{
+    static const uint32 MAX_GLYPHS = 256;
+
+	uint32 height;
+	FixedArray<GlyphInfo, MAX_GLYPHS> glyphInfo;
 };
 
 // TODO move this to vulkan libs?
@@ -45,12 +55,12 @@ struct VulkanSpritePipeline
     VkBuffer instanceBuffer;
     VkDeviceMemory instanceBufferMemory;
 
-    FixedArray<VulkanImage, MAX_SPRITES> sprites;
+    VulkanImage sprites[MAX_SPRITES];
     VkSampler spriteSampler;
 
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
-    FixedArray<VkDescriptorSet, MAX_SPRITES> descriptorSets;
+    VkDescriptorSet descriptorSets[MAX_SPRITES];
 
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
@@ -61,18 +71,20 @@ struct VulkanTextPipeline
     static const uint32 MAX_FONTS = (uint32)FontId::COUNT;
     static const uint32 MAX_CHARACTERS = 1024;
 
+    FontFace fontFaces[MAX_FONTS];
+
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
 
     VkBuffer instanceBuffer;
     VkDeviceMemory instanceBufferMemory;
 
-    FixedArray<VulkanImage, MAX_FONTS> atlases;
+    VulkanImage atlases[MAX_FONTS];
     VkSampler atlasSampler;
 
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
-    FixedArray<VkDescriptorSet, MAX_FONTS> descriptorSets;
+    VkDescriptorSet descriptorSets[MAX_FONTS];
 
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
@@ -107,6 +119,7 @@ struct VulkanAppState
     VkFence fence;
 
     VulkanSpritePipeline spritePipeline;
+    VulkanTextPipeline textPipeline;
     VulkanMeshPipeline meshPipeline;
 };
 
