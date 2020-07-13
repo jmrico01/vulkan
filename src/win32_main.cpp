@@ -3,9 +3,9 @@
 #include <intrin.h>
 
 #include <km_common/km_input.h>
+#include <km_common/vulkan/km_vulkan_core.h>
 
 #include "app_main.h"
-#include "vulkan_core.h"
 
 bool running_ = false;
 bool windowPropertiesChanged_ = false;

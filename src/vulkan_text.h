@@ -7,6 +7,7 @@
 
 #include "load_font.h"
 #include "vulkan_core.h"
+#include "vulkan_sprite.h"
 
 //
 // Shared utility for rendering text in Vulkan
@@ -18,7 +19,7 @@
 // Your app should have a VulkanTextRenderState, initially cleared through ResetTextRenderState(...)
 // Then you can repeatedly call PushText(...) to push text render operations into the VulkanTextRenderState object
 //
-// When your app is filling the command buffer for rendering it, should call UploadAndSubmitTextDrawCommands(...)
+// When your app is filling the command buffer for rendering, you should call UploadAndSubmitTextDrawCommands(...)
 // to draw all text recorded through PushText(...)
 //
 

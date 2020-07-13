@@ -8,40 +8,9 @@
 
 #include <km_common/km_array.h>
 #include <km_common/km_debug.h>
-
-#include "load_font.h"
-#include "vulkan_core.h"
-#include "vulkan_text.h"
-
-enum class SpriteId
-{
-    JON,
-    ROCK,
-
-    COUNT
-};
-
-struct VulkanSpritePipeline
-{
-    static const uint32 MAX_SPRITES = (uint32)SpriteId::COUNT;
-    static const uint32 MAX_INSTANCES = 64;
-
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-
-    VkBuffer instanceBuffer;
-    VkDeviceMemory instanceBufferMemory;
-
-    VulkanImage sprites[MAX_SPRITES];
-    VkSampler spriteSampler;
-
-    VkDescriptorSetLayout descriptorSetLayout;
-    VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSets[MAX_SPRITES];
-
-    VkPipelineLayout pipelineLayout;
-    VkPipeline pipeline;
-};
+#include <km_common/vulkan/km_vulkan_core.h>
+#include <km_common/vulkan/km_vulkan_sprite.h>
+#include <km_common/vulkan/km_vulkan_text.h>
 
 struct VulkanMeshPipeline
 {
@@ -85,17 +54,9 @@ struct AppState
     Vec2 cameraAngles;
 };
 
-struct VulkanSpriteInstanceData
-{
-    Vec3 pos;
-    Vec2 size;
-};
-
 struct FrameState
 {
-    using SpriteInstanceData = FixedArray<VulkanSpriteInstanceData, VulkanSpritePipeline::MAX_INSTANCES>;
-    StaticArray<SpriteInstanceData, VulkanSpritePipeline::MAX_SPRITES> spriteInstanceData;
-
+    VulkanSpriteRenderState spriteRenderState;
     VulkanTextRenderState textRenderState;
 };
 
