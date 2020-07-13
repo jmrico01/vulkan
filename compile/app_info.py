@@ -16,10 +16,10 @@ TARGET_APP = BuildTarget("vulkan",
                 # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
 
                 "-wd4201",    # nonstandard extension used: nameless struct/union
-                "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # HACK
+                "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # TODO HACK
             ],
             linker_flags=[
-                "-LIBPATH:\"" + WIN32_VULKAN_PATH + "\\Lib\"", # HACK
+                "-LIBPATH:\"" + WIN32_VULKAN_PATH + "\\Lib\"", # TODO HACK
                 "user32.lib",
                 "vulkan-1.lib",
                 # "-subsystem:windows",      # Windows application (no console)
