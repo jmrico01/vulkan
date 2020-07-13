@@ -10,8 +10,8 @@
 #include <km_common/km_load_obj.h>
 #include <km_common/km_os.h>
 #include <km_common/km_string.h>
+#include <km_common/app/km_app.h>
 
-#include "app_main.h"
 #include "lightmap.h"
 
 #define ENABLE_THREADS 1
@@ -989,20 +989,17 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
 
 #include "lightmap.cpp"
 
-#if GAME_WIN32
-#include "win32_main.cpp"
-#else
-#error "Unsupported platform"
-#endif
-
 #include <km_common/km_array.cpp>
 #include <km_common/km_container.cpp>
-#include <km_common/km_input.cpp>
 #include <km_common/km_load_font.cpp>
 #include <km_common/km_load_obj.cpp>
 #include <km_common/km_memory.cpp>
 #include <km_common/km_os.cpp>
 #include <km_common/km_string.cpp>
+
+#include <km_common/app/km_app.cpp>
+#include <km_common/app/km_input.cpp>
+
 #include <km_common/vulkan/km_vulkan_core.cpp>
 #include <km_common/vulkan/km_vulkan_sprite.cpp>
 #include <km_common/vulkan/km_vulkan_text.cpp>

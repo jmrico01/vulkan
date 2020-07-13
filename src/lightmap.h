@@ -2,8 +2,7 @@
 
 #include <km_common/km_load_obj.h>
 #include <km_common/km_memory.h>
-
-#include "app_main.h"
+#include <km_common/app/km_app.h>
 
 // MODEL INDICES:
 // 0, 1, 2 - some rocks
