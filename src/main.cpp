@@ -240,7 +240,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const float32 farZ = 50.0f;
     ubo.proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
-    const uint32 NUM_JONS = 10;
+    const uint32 NUM_JONS = 0;
     for (uint32 i = 0; i < NUM_JONS; i++) {
         const Vec2Int pos = { RandInt(0, screenSize.x), RandInt(0, screenSize.y) };
         const Vec2Int size = { RandInt(50, 300), RandInt(50, 300) };
@@ -623,7 +623,7 @@ bool LoadMeshPipeline(const VulkanWindow& window, VkCommandPool commandPool, Lin
             const float32 area = TriangleArea(t[0].pos, t[1].pos, t[2].pos);
             const float32 weight = ClampFloat32(SmoothStep(0.0f, 0.005f, area), 0.0f, 1.0f);
             for (int j = 0; j < 3; j++) {
-                t[j].lightmapWeight = 1.0f;
+                t[j].lightmapWeight = weight;
             }
         }
 

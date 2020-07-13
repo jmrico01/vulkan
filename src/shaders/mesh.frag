@@ -20,5 +20,8 @@ void main()
 	vec3 colorLightmap = texture(lightmapSampler, inUv).rgb;
     vec3 colorFinal = colorAmbient + lerp(inColor, colorLightmap, inLightmapWeight);
 
-	outColor = vec4(colorFinal, 1.0);
+    float gamma = 2.2;
+    vec3 colorGammaCorrected = pow(colorFinal, vec3(gamma));
+
+	outColor = vec4(colorGammaCorrected, 1.0);
 }
