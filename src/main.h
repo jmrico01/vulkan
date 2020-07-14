@@ -12,6 +12,22 @@
 #include <km_common/vulkan/km_vulkan_sprite.h>
 #include <km_common/vulkan/km_vulkan_text.h>
 
+enum SpriteId
+{
+    JON,
+    ROCK,
+
+    COUNT
+};
+
+enum class FontId
+{
+    OCR_A_REGULAR_18,
+    OCR_A_REGULAR_24,
+
+    COUNT
+};
+
 struct VulkanMeshPipeline
 {
     static const uint32 MAX_MESHES = 64;
@@ -40,14 +56,15 @@ struct VulkanAppState
     VkCommandBuffer commandBuffer;
     VkFence fence;
 
-    VulkanSpritePipeline spritePipeline;
-    VulkanTextPipeline textPipeline;
+    VulkanSpritePipeline<(uint32)SpriteId::COUNT> spritePipeline;
+    VulkanTextPipeline<(uint32)FontId::COUNT> textPipeline;
     VulkanMeshPipeline meshPipeline;
 };
 
 struct AppState
 {
     VulkanAppState vulkanAppState;
+    FontFace fontFaces[FontId::COUNT];
 
     float32 totalElapsed;
     Vec3 cameraPos;
@@ -56,8 +73,8 @@ struct AppState
 
 struct FrameState
 {
-    VulkanSpriteRenderState spriteRenderState;
-    VulkanTextRenderState textRenderState;
+    VulkanSpriteRenderState<(uint32)SpriteId::COUNT> spriteRenderState;
+    VulkanTextRenderState<(uint32)FontId::COUNT> textRenderState;
 };
 
 struct TransientState
