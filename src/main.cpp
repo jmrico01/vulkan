@@ -243,8 +243,19 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     PushText(fontIndex, appState->fontFaces[fontIndex], text, Vec2Int { 100, 100 }, 0.0f, screenSize, textColor,
              &transientState->frameState.textRenderState);
 
-    const Mat4 modelMob = Mat4::one;
-    PushMesh(MeshId::MOB, modelMob, &transientState->frameState.meshRenderState);
+    for (uint32 i = 0; i < 10; i++) {
+        const Mat4 modelMob = Translate(Vec3 { 1.0f * i, 0.5f * i, 0.0f });
+
+        // PushMesh(MeshId::MOB, modelMob, &transientState->frameState.meshRenderState);
+
+        // PushMesh(MeshId::TILE_BACK, modelMob, &transientState->frameState.meshRenderState);
+    }
+
+    const Mat4 modelTile = Translate(Vec3 { 0.0f, 0.0f, 0.5f });
+    //PushMesh(MeshId::TILE_FRONT, modelTile, &transientState->frameState.meshRenderState);
+    PushMesh(MeshId::TILE_RIGHT, modelTile, &transientState->frameState.meshRenderState);
+    PushMesh(MeshId::TILE_TOP, modelTile, &transientState->frameState.meshRenderState);
+    //PushMesh(MeshId::TILE_BOTTOM, modelTile, &transientState->frameState.meshRenderState);
 
     // ================================================================================================
     // Vulkan rendering ===============================================================================

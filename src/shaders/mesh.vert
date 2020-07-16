@@ -20,6 +20,6 @@ void main() {
     outNormal = inNormal;
     outColor = inColor;
 
-	vec4 pos = ubo.proj * ubo.view * /*model * */ vec4(inPosition, 1.0);
+	vec4 pos = ubo.proj * ubo.view * model * vec4(inPosition, 1.0);
     gl_Position = pos;
 }

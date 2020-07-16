@@ -64,8 +64,8 @@ struct VulkanMeshInstanceData
 
 struct VulkanMeshRenderState
 {
-    using MeshInstanceData = FixedArray<VulkanMeshInstanceData, VulkanMeshPipeline::MAX_MESHES>;
-    StaticArray<MeshInstanceData, VulkanMeshPipeline::MAX_INSTANCES> meshInstanceData;
+    using MeshInstanceData = FixedArray<VulkanMeshInstanceData, VulkanMeshPipeline::MAX_INSTANCES>;
+    StaticArray<MeshInstanceData, VulkanMeshPipeline::MAX_MESHES> meshInstanceData;
 };
 
 void PushMesh(MeshId meshId, Mat4 model, VulkanMeshRenderState* renderState);
