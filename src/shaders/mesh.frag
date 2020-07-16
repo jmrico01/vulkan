@@ -2,12 +2,8 @@
 
 layout(location = 0) in vec3 inNormal;
 layout(location = 1) in vec3 inColor;
-layout(location = 2) in vec2 inUv;
-layout(location = 3) in float inLightmapWeight;
 
 layout(location = 0) out vec4 outColor;
-
-layout(binding = 1) uniform sampler2D lightmapSampler;
 
 vec3 lerp(vec3 a, vec3 b, float t)
 {
@@ -16,12 +12,9 @@ vec3 lerp(vec3 a, vec3 b, float t)
 
 void main()
 {
-	vec3 colorAmbient = vec3(0.0, 0.0, 0.0);
-	vec3 colorLightmap = texture(lightmapSampler, inUv).rgb;
-    vec3 colorFinal = colorAmbient + lerp(inColor, colorLightmap, inLightmapWeight);
+	float gamma = 2.2;
+	vec3 colorGammaCorrected = pow(inColor, vec3(gamma));
 
-    float gamma = 2.2;
-    vec3 colorGammaCorrected = pow(colorFinal, vec3(gamma));
-
-	outColor = vec4(colorGammaCorrected, 1.0);
+	// outColor = vec4(colorGammaCorrected, 1.0);
+	outColor = vec4(1.0, 1.0, 1.0, 1.0);
 }

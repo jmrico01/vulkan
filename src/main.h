@@ -12,6 +12,8 @@
 #include <km_common/vulkan/km_vulkan_sprite.h>
 #include <km_common/vulkan/km_vulkan_text.h>
 
+#include "mesh.h"
+
 enum SpriteId
 {
     JON,
@@ -28,28 +30,6 @@ enum class FontId
     COUNT
 };
 
-struct VulkanMeshPipeline
-{
-    static const uint32 MAX_MESHES = 64;
-    FixedArray<uint32, MAX_MESHES> meshTriangleEndInds;
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-
-    static const uint32 MAX_LIGHTMAPS = 64;
-    FixedArray<VulkanImage, MAX_LIGHTMAPS> lightmaps;
-    VkSampler lightmapSampler;
-
-    VkBuffer uniformBuffer;
-    VkDeviceMemory uniformBufferMemory;
-
-    VkDescriptorSetLayout descriptorSetLayout;
-    VkDescriptorPool descriptorPool;
-    FixedArray<VkDescriptorSet, MAX_LIGHTMAPS> descriptorSets;
-
-    VkPipelineLayout pipelineLayout;
-    VkPipeline pipeline;
-};
-
 struct VulkanAppState
 {
     VkCommandPool commandPool;
@@ -58,7 +38,9 @@ struct VulkanAppState
 
     VulkanSpritePipeline<(uint32)SpriteId::COUNT> spritePipeline;
     VulkanTextPipeline<(uint32)FontId::COUNT> textPipeline;
+
     VulkanMeshPipeline meshPipeline;
+    VulkanLightmapMeshPipeline lightmapMeshPipeline;
 };
 
 struct AppState
@@ -75,6 +57,8 @@ struct FrameState
 {
     VulkanSpriteRenderState<(uint32)SpriteId::COUNT> spriteRenderState;
     VulkanTextRenderState<(uint32)FontId::COUNT> textRenderState;
+
+    VulkanMeshRenderState meshRenderState;
 };
 
 struct TransientState
