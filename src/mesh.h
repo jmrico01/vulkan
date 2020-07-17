@@ -54,6 +54,7 @@ struct VulkanMeshPipeline
 struct VulkanMeshInstanceData
 {
     Mat4 model;
+    Vec3 color;
 };
 
 struct VulkanMeshRenderState
@@ -62,7 +63,7 @@ struct VulkanMeshRenderState
     StaticArray<MeshInstanceData, VulkanMeshPipeline::MAX_MESHES> meshInstanceData;
 };
 
-void PushMesh(MeshId meshId, Mat4 model, VulkanMeshRenderState* renderState);
+void PushMesh(MeshId meshId, Mat4 model, Vec3 color, VulkanMeshRenderState* renderState);
 
 void ResetMeshRenderState(VulkanMeshRenderState* renderState);
 

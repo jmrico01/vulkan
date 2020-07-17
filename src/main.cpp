@@ -17,6 +17,14 @@
 #define ENABLE_THREADS 1
 #define ENABLE_LIGHTMAPPED_MESH 0
 
+/*
+TODO
+
+> block editor
+> post-process pipeline for grain
+
+*/
+
 // Required for platform main
 const char* WINDOW_NAME = "vulkan";
 const int WINDOW_START_WIDTH  = 1600;
@@ -42,6 +50,56 @@ internal TransientState* GetTransientState(AppMemory* memory)
     return transientState;
 }
 
+void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingSize, uint32 buildingHeight,
+                        LinearAllocator* allocator, BlockGrid* blockGrid)
+{
+    MemSet(blockGrid, 0, sizeof(BlockGrid));
+
+    const uint32 cityBlockSize = streetSize + sidewalkSize * 2 + buildingSize;
+
+    Array<uint8> streetMask = allocator->NewArray<uint8>(cityBlockSize);
+    for (uint32 i = 0; i < cityBlockSize; i++) {
+        streetMask[i] = i < streetSize;
+    }
+    Array<uint8> sidewalkMask = allocator->NewArray<uint8>(cityBlockSize);
+    for (uint32 i = 0; i < cityBlockSize; i++) {
+        sidewalkMask[i] = (i >= streetSize && i < (streetSize + sidewalkSize))
+            || (i >= (streetSize + sidewalkSize + buildingSize) && i < (streetSize + 2 * sidewalkSize + buildingSize));
+    }
+    Array<uint8> buildingMask = allocator->NewArray<uint8>(cityBlockSize);
+    for (uint32 i = 0; i < cityBlockSize; i++) {
+        buildingMask[i] = i >= (streetSize + sidewalkSize) && i < (streetSize + sidewalkSize + buildingSize);
+    }
+
+    static_assert(BLOCK_ORIGIN_Z > 0);
+    for (uint32 z = 0; z < blockGrid->SIZE; z++) {
+        for (uint32 y = 0; y < (*blockGrid)[z].SIZE; y++) {
+            for (uint32 x = 0; x < (*blockGrid)[z][y].SIZE; x++) {
+                const uint32 cityBlockX = x % cityBlockSize;
+                const uint32 cityBlockY = y % cityBlockSize;
+
+                const uint8 building = buildingMask[cityBlockX] * buildingMask[cityBlockY];
+                if (z == BLOCK_ORIGIN_Z - 1) {
+                    const uint8 street = streetMask[cityBlockX] + streetMask[cityBlockY];
+                    const uint8 sidewalk = sidewalkMask[cityBlockX] + sidewalkMask[cityBlockY];
+                    if (street) {
+                        (*blockGrid)[z][y][x].id = BlockId::STREET;
+                    }
+                    else if (sidewalk) {
+                        (*blockGrid)[z][y][x].id = BlockId::SIDEWALK;
+                    }
+                    else if (building) {
+                        (*blockGrid)[z][y][x].id = BlockId::BUILDING;
+                    }
+                }
+                else if (building && z - BLOCK_ORIGIN_Z < buildingHeight) {
+                    (*blockGrid)[z][y][x].id = BlockId::BUILDING;
+                }
+            }
+        }
+    }
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
@@ -59,19 +117,23 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Initialize memory if necessary
     if (!memory->initialized) {
-        appState->totalElapsed = 0.0f;
-        appState->cameraPos = Vec3 { 0.0f, 0.0f, CAMERA_HEIGHT };
-        appState->cameraAngles = Vec2 { 0.0f, 0.0f };
+        const uint32 streetSize = 3;
+        const uint32 sidewalkSize = 2;
+        const uint32 buildingSize = 10;
+        const uint32 buildingHeight = 3;
 
-        static_assert(BLOCK_ORIGIN_Z > 0);
-        MemSet(appState->blocks, 0, sizeof(appState->blocks));
-        for (uint32 y = 0; y < BLOCKS_SIZE_Y; y++) {
-            for (uint32 x = 0; x < BLOCKS_SIZE_X; x++) {
-                appState->blocks[BLOCK_ORIGIN_Z - 1][y][x] = BlockId::BLOCK;
-            }
+        {
+            LinearAllocator allocator(transientState->scratch);
+            GenerateCityBlocks(streetSize, sidewalkSize, buildingSize, buildingHeight, &allocator, &appState->blockGrid);
         }
 
-        appState->noClip = false;
+        const Vec3 startPos = Vec3 { 0.0f, 0.0f, CAMERA_HEIGHT };
+
+        appState->cameraPos = startPos;
+        appState->cameraAngles = Vec2 { 0.0f, 0.0f };
+
+        appState->noclipPos = startPos;
+        appState->noclip = false;
 
         memory->initialized = true;
     }
@@ -110,10 +172,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     }
 #endif
 
-    appState->totalElapsed += deltaTime;
-
     if (KeyPressed(input, KM_KEY_N)) {
-        appState->noClip = !appState->noClip;
+        appState->noclip = !appState->noclip;
     }
 
     const float32 cameraSensitivity = 2.0f;
@@ -135,9 +195,14 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Vec3 cameraRight = cameraRotYawInv * -Vec3::unitY;
     const Vec3 cameraUp = Vec3::unitZ;
 
-    float32 speed = 3.0f;
+    float32 speed = 5.0f;
     if (KeyDown(input, KM_KEY_SHIFT)) {
-        speed *= 2.0f;
+        if (appState->noclip) {
+            speed *= 3.0f;
+        }
+        else {
+            speed *= 1.6f;
+        }
     }
 
     Vec3 velocity = Vec3::zero;
@@ -153,7 +218,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     if (KeyDown(input, KM_KEY_D)) {
         velocity += cameraRight;
     }
-    if (appState->noClip) {
+    if (appState->noclip) {
         if (KeyDown(input, KM_KEY_SPACE)) {
             velocity += cameraUp;
         }
@@ -167,7 +232,12 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     if (velocity != Vec3::zero) {
         velocity = Normalize(velocity) * speed * deltaTime;
-        appState->cameraPos += velocity;
+        if (appState->noclip) {
+            appState->noclipPos += velocity;
+        }
+        else {
+            appState->cameraPos += velocity;
+        }
     }
 
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
@@ -178,29 +248,33 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         * QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX);
     const Mat4 baseCameraRotMat4 = UnitQuatToMat4(baseCameraRot);
 
-    const Mat4 view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->cameraPos);
+    Mat4 view;
+    if (appState->noclip) {
+        view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->noclipPos);
+    }
+    else {
+        view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->cameraPos);
+    }
 
     const float32 aspect = (float32)screenSize.x / (float32)screenSize.y;
     const float32 nearZ = 0.1f;
-    const float32 farZ = 50.0f;
+    const float32 farZ = 100.0f;
     const Mat4 proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
-
-    const uint32 NUM_JONS = 0;
-    for (uint32 i = 0; i < NUM_JONS; i++) {
-        const Vec2Int pos = { RandInt(0, screenSize.x), RandInt(0, screenSize.y) };
-        const Vec2Int size = { RandInt(50, 300), RandInt(50, 300) };
-        PushSprite((uint32)SpriteId::JON, pos, size, 0.5f, screenSize, &transientState->frameState.spriteRenderState);
-    }
 
     const uint32 fontIndex = (uint32)FontId::OCR_A_REGULAR_18;
     const_string text = ToString("the quick brown fox jumps over the lazy dog");
     const Vec4 textColor = Vec4::one;
-    PushText(fontIndex, appState->fontFaces[fontIndex], text, Vec2Int { 100, 100 }, 0.0f, screenSize, textColor,
+    PushText(fontIndex, appState->fontFaces[fontIndex], text, Vec2Int { 100, 100 }, 0.0f, textColor, screenSize,
              &transientState->frameState.textRenderState);
+
+    const Vec4 rectColor = Vec4 { 1.0f, 0.6f, 0.6f, 1.0f };
+    PushSprite((uint32)SpriteId::PIXEL, Vec2Int { 100, 300 }, Vec2Int { 400, 50 }, 0.0f, rectColor, screenSize,
+               &transientState->frameState.spriteRenderState);
 
     // Draw blocks
     {
         const Mat4 scale = Scale(Vec3 { BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE });
+
         const Mat4 top    = Translate(Vec3::unitZ);
         const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f })));
         const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) *
@@ -210,10 +284,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitY));
         const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY));
 
-        for (uint32 z = 0; z < BLOCKS_SIZE_Z; z++) {
-            for (uint32 y = 0; y < BLOCKS_SIZE_Y; y++) {
-                for (uint32 x = 0; x < BLOCKS_SIZE_X; x++) {
-                    if (appState->blocks[z][y][x] == BlockId::NONE) continue;
+        for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
+            for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
+                for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
+                    const Block block = appState->blockGrid[z][y][x];
+
+                    Vec3 color = Vec3::one;
+                    switch (block.id) {
+                        case BlockId::NONE: {
+                            continue;
+                        } break;
+                        case BlockId::SIDEWALK: {
+                            color = Vec3::one * 0.7f;
+                        } break;
+                        case BlockId::STREET: {
+                            color = Vec3::one * 0.5f;
+                        } break;
+                        case BlockId::BUILDING: {
+                            color = Vec3::one * 0.8f;
+                        } break;
+                    }
 
                     const Vec3 pos = {
                         (float32)((int)x - (int)BLOCK_ORIGIN_X) * BLOCK_SIZE,
@@ -221,23 +311,29 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                         (float32)((int)z - (int)BLOCK_ORIGIN_Z) * BLOCK_SIZE,
                     };
                     const Mat4 posTransform = Translate(pos);
-                    if (z == BLOCKS_SIZE_Z - 1 || appState->blocks[z + 1][y][x] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * top, &transientState->frameState.meshRenderState);
+                    if (z == BLOCKS_SIZE_Z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * top, color,
+                                 &transientState->frameState.meshRenderState);
                     }
-                    if (z == 0 || appState->blocks[z - 1][y][x] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * bottom, &transientState->frameState.meshRenderState);
+                    if (z == 0 || appState->blockGrid[z - 1][y][x].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color,
+                                 &transientState->frameState.meshRenderState);
                     }
-                    if (y == BLOCKS_SIZE_Y - 1 || appState->blocks[z][y + 1][x] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * left, &transientState->frameState.meshRenderState);
+                    if (y == BLOCKS_SIZE_Y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * left, color,
+                                 &transientState->frameState.meshRenderState);
                     }
-                    if (y == 0 || appState->blocks[z][y - 1][x] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * right, &transientState->frameState.meshRenderState);
+                    if (y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * right, color,
+                                 &transientState->frameState.meshRenderState);
                     }
-                    if (x == BLOCKS_SIZE_X - 1 || appState->blocks[z][y][x + 1] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * front, &transientState->frameState.meshRenderState);
+                    if (x == BLOCKS_SIZE_X - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * front, color,
+                                 &transientState->frameState.meshRenderState);
                     }
-                    if (x == 0 || appState->blocks[z][y][x - 1] == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * back, &transientState->frameState.meshRenderState);
+                    if (x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * back, color,
+                                 &transientState->frameState.meshRenderState);
                     }
                 }
             }
@@ -483,9 +579,11 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
     // Sprites
     {
         const char* spriteFilePaths[] = {
+            "data/sprites/pixel.png",
             "data/sprites/jon.png",
             "data/sprites/rock.png"
         };
+        static_assert(C_ARRAY_LENGTH(spriteFilePaths) == (uint32)SpriteId::COUNT);
 
         for (uint32 i = 0; i < C_ARRAY_LENGTH(spriteFilePaths); i++) {
             int width, height, channels;
@@ -495,9 +593,27 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
             }
             defer(stbi_image_free(imageData));
 
+            uint8* vulkanImageData = (uint8*)imageData;
+            if (channels == 3) {
+                LOG_ERROR("Image %s with 3 channels, converting to RGBA\n", spriteFilePaths[i]);
+
+                vulkanImageData = allocator.New<uint8>(width * height * 4);
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        const int imageDataInd = (y * width + x) * 3;
+                        vulkanImageData[imageDataInd + 0] = imageData[imageDataInd + 0];
+                        vulkanImageData[imageDataInd + 1] = imageData[imageDataInd + 1];
+                        vulkanImageData[imageDataInd + 2] = imageData[imageDataInd + 2];
+                        vulkanImageData[imageDataInd + 3] = 255;
+                    }
+                }
+
+                channels = 4;
+            }
+
             VulkanImage sprite;
             if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
-                                 width, height, channels, (const uint8*)imageData, &sprite)) {
+                                 width, height, channels, vulkanImageData, &sprite)) {
                 DEBUG_PANIC("Failed to Vulkan image for sprite %s\n", spriteFilePaths[i]);
             }
 
@@ -519,6 +635,7 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
             { ToString("data/fonts/ocr-a/regular.ttf"), 18 },
             { ToString("data/fonts/ocr-a/regular.ttf"), 24 },
         };
+        static_assert(C_ARRAY_LENGTH(fontData) == (uint32)FontId::COUNT);
 
         FT_Library ftLibrary;
         FT_Error error = FT_Init_FreeType(&ftLibrary);

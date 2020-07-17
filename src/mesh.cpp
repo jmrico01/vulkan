@@ -65,7 +65,7 @@ internal VulkanMeshGeometry ObjToVulkanMeshGeometry(const LoadObjResult& obj, Li
         return geometry;
     }
 
-    const Vec3 vertexColor = Vec3::one;
+    const Vec3 color = Vec3::one;
 
     uint32 endInd = 0;
     for (uint32 i = 0; i < obj.models.size; i++) {
@@ -77,7 +77,7 @@ internal VulkanMeshGeometry ObjToVulkanMeshGeometry(const LoadObjResult& obj, Li
             for (int k = 0; k < 3; k++) {
                 geometry.triangles[tInd][k].pos = t.v[k].pos;
                 geometry.triangles[tInd][k].normal = normal;
-                geometry.triangles[tInd][k].color = vertexColor;
+                geometry.triangles[tInd][k].color = color;
             }
         }
         endInd += obj.models[i].triangles.size;
@@ -90,14 +90,14 @@ internal VulkanMeshGeometry ObjToVulkanMeshGeometry(const LoadObjResult& obj, Li
             for (int k = 0; k < 3; k++) {
                 geometry.triangles[tInd][k].pos = q.v[k].pos;
                 geometry.triangles[tInd][k].normal = normal;
-                geometry.triangles[tInd][k].color = vertexColor;
+                geometry.triangles[tInd][k].color = color;
             }
 
             for (int k = 0; k < 3; k++) {
                 const uint32 quadInd = (k + 2) % 4;
                 geometry.triangles[tInd + 1][k].pos = q.v[quadInd].pos;
                 geometry.triangles[tInd + 1][k].normal = normal;
-                geometry.triangles[tInd + 1][k].color = vertexColor;
+                geometry.triangles[tInd + 1][k].color = color;
             }
         }
         endInd += obj.models[i].quads.size * 2;
@@ -174,13 +174,14 @@ internal VulkanLightmapMeshGeometry ObjToVulkanLightmapMeshGeometry(const LoadOb
     return geometry;
 }
 
-void PushMesh(MeshId meshId, Mat4 model, VulkanMeshRenderState* renderState)
+void PushMesh(MeshId meshId, Mat4 model, Vec3 color, VulkanMeshRenderState* renderState)
 {
     const uint32 meshIndex = (uint32)meshId;
     DEBUG_ASSERT(meshIndex < renderState->meshInstanceData.SIZE);
 
     VulkanMeshInstanceData* instanceData = renderState->meshInstanceData[meshIndex].Append();
     instanceData->model = model;
+    instanceData->color = color;
 }
 
 void ResetMeshRenderState(VulkanMeshRenderState* renderState)
@@ -331,7 +332,7 @@ bool LoadMeshPipelineSwapchain(const VulkanWindow& window, const VulkanSwapchain
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo };
 
     VkVertexInputBindingDescription bindingDescriptions[2] = {};
-    VkVertexInputAttributeDescription attributeDescriptions[7] = {};
+    VkVertexInputAttributeDescription attributeDescriptions[8] = {};
 
     // Per-vertex attribute bindings
     bindingDescriptions[0].binding = 0;
@@ -374,6 +375,11 @@ bool LoadMeshPipelineSwapchain(const VulkanWindow& window, const VulkanSwapchain
     attributeDescriptions[6].location = 6;
     attributeDescriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attributeDescriptions[6].offset = 12 * sizeof(float32);
+
+    attributeDescriptions[7].binding = 1;
+    attributeDescriptions[7].location = 7;
+    attributeDescriptions[7].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[7].offset = offsetof(VulkanMeshInstanceData, color);
 
     VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
     vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -516,12 +522,12 @@ bool LoadMeshPipelineWindow(const VulkanWindow& window, VkCommandPool commandPoo
         const Vec3 color = Vec3::one;
         const StaticArray<VulkanMeshVertex, 6> tileVertices = {
             .data = {
-                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
-                { { 0.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                { { 1.0f, 0.0f, 0.0f }, Vec3::unitZ, color, },
-                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
+                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color },
+                { { 0.0f, 1.0f, 0.0f }, Vec3::unitZ, color },
+                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color },
+                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color },
+                { { 1.0f, 0.0f, 0.0f }, Vec3::unitZ, color },
+                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color },
             }
         };
 

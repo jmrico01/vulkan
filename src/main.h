@@ -14,7 +14,7 @@
 
 #include "mesh.h"
 
-const float32 BLOCK_SIZE = 1.0f;
+const float32 BLOCK_SIZE = 2.0f;
 const uint32 BLOCKS_SIZE_X = 64;
 const uint32 BLOCKS_SIZE_Y = 64;
 const uint32 BLOCKS_SIZE_Z = 16;
@@ -23,14 +23,25 @@ const uint32 BLOCK_ORIGIN_X = BLOCKS_SIZE_X / 2;
 const uint32 BLOCK_ORIGIN_Y = BLOCKS_SIZE_Y / 2;
 const uint32 BLOCK_ORIGIN_Z = 1;
 
+
 enum class BlockId
 {
     NONE = 0,
-    BLOCK,
+    SIDEWALK,
+    STREET,
+    BUILDING,
 };
+
+struct Block
+{
+    BlockId id;
+};
+
+using BlockGrid = StaticArray<StaticArray<StaticArray<Block, BLOCKS_SIZE_X>, BLOCKS_SIZE_Y>, BLOCKS_SIZE_Z>;
 
 enum class SpriteId
 {
+    PIXEL,
     JON,
     ROCK,
 
@@ -63,12 +74,13 @@ struct AppState
     VulkanAppState vulkanAppState;
     FontFace fontFaces[FontId::COUNT];
 
-    BlockId blocks[BLOCKS_SIZE_Z][BLOCKS_SIZE_Y][BLOCKS_SIZE_X];
-    float32 totalElapsed;
+    BlockGrid blockGrid;
+
     Vec3 cameraPos;
     Vec2 cameraAngles;
 
-    bool noClip;
+    Vec3 noclipPos;
+    bool noclip;
 };
 
 struct FrameState
