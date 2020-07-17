@@ -55,10 +55,12 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         (int)vulkanState.swapchain.extent.height
     };
 
+    const float32 CAMERA_HEIGHT = 1.0f;
+
     // Initialize memory if necessary
     if (!memory->initialized) {
         appState->totalElapsed = 0.0f;
-        appState->cameraPos = Vec3 { -1.0f, 0.0f, 1.0f };
+        appState->cameraPos = Vec3 { 0.0f, 0.0f, CAMERA_HEIGHT };
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
         static_assert(BLOCK_ORIGIN_Z > 0);
@@ -68,6 +70,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 appState->blocks[BLOCK_ORIGIN_Z - 1][y][x] = BlockId::BLOCK;
             }
         }
+
+        appState->noClip = false;
 
         memory->initialized = true;
     }
@@ -108,6 +112,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     appState->totalElapsed += deltaTime;
 
+    if (KeyPressed(input, KM_KEY_N)) {
+        appState->noClip = !appState->noClip;
+    }
+
     const float32 cameraSensitivity = 2.0f;
     const Vec2 mouseDeltaFrac = {
         (float32)input.mouseDelta.x / (float32)screenSize.x,
@@ -117,7 +125,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     appState->cameraAngles.y -= mouseDeltaFrac.y * cameraSensitivity;
 
     appState->cameraAngles.x = ModFloat32(appState->cameraAngles.x, PI_F * 2.0f);
-    appState->cameraAngles.y = ClampFloat32(appState->cameraAngles.y, -PI_F, PI_F);
+    appState->cameraAngles.y = ClampFloat32(appState->cameraAngles.y, -PI_F / 2.0f, PI_F / 2.0f);
 
     const Quat cameraRotYaw = QuatFromAngleUnitAxis(appState->cameraAngles.x, Vec3::unitZ);
     const Quat cameraRotPitch = QuatFromAngleUnitAxis(appState->cameraAngles.y, Vec3::unitY);
@@ -145,20 +153,22 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     if (KeyDown(input, KM_KEY_D)) {
         velocity += cameraRight;
     }
+    if (appState->noClip) {
+        if (KeyDown(input, KM_KEY_SPACE)) {
+            velocity += cameraUp;
+        }
+        if (KeyDown(input, KM_KEY_CTRL)) {
+            velocity -= cameraUp;
+        }
+    }
+    else {
+        appState->cameraPos.z = CAMERA_HEIGHT;
+    }
 
     if (velocity != Vec3::zero) {
         velocity = Normalize(velocity) * speed * deltaTime;
         appState->cameraPos += velocity;
     }
-
-#if 0
-    if (KeyDown(input, KM_KEY_SPACE)) {
-        appState->cameraPos += speed * cameraUp * deltaTime;
-    }
-    if (KeyDown(input, KM_KEY_SHIFT)) {
-        appState->cameraPos -= speed * cameraUp * deltaTime;
-    }
-#endif
 
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
     const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
@@ -190,6 +200,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Draw blocks
     {
+        const Mat4 scale = Scale(Vec3 { BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE });
         const Mat4 top    = Translate(Vec3::unitZ);
         const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f })));
         const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) *
@@ -205,17 +216,29 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                     if (appState->blocks[z][y][x] == BlockId::NONE) continue;
 
                     const Vec3 pos = {
-                        (float32)((int)x - (int)BLOCK_ORIGIN_X),
-                        (float32)((int)y - (int)BLOCK_ORIGIN_Y),
-                        (float32)((int)z - (int)BLOCK_ORIGIN_Z),
+                        (float32)((int)x - (int)BLOCK_ORIGIN_X) * BLOCK_SIZE,
+                        (float32)((int)y - (int)BLOCK_ORIGIN_Y) * BLOCK_SIZE,
+                        (float32)((int)z - (int)BLOCK_ORIGIN_Z) * BLOCK_SIZE,
                     };
                     const Mat4 posTransform = Translate(pos);
-                    PushMesh(MeshId::TILE, posTransform * top,    &transientState->frameState.meshRenderState);
-                    PushMesh(MeshId::TILE, posTransform * bottom, &transientState->frameState.meshRenderState);
-                    PushMesh(MeshId::TILE, posTransform * left,   &transientState->frameState.meshRenderState);
-                    PushMesh(MeshId::TILE, posTransform * right,  &transientState->frameState.meshRenderState);
-                    PushMesh(MeshId::TILE, posTransform * front,  &transientState->frameState.meshRenderState);
-                    PushMesh(MeshId::TILE, posTransform * back,   &transientState->frameState.meshRenderState);
+                    if (z == BLOCKS_SIZE_Z - 1 || appState->blocks[z + 1][y][x] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * top, &transientState->frameState.meshRenderState);
+                    }
+                    if (z == 0 || appState->blocks[z - 1][y][x] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * bottom, &transientState->frameState.meshRenderState);
+                    }
+                    if (y == BLOCKS_SIZE_Y - 1 || appState->blocks[z][y + 1][x] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * left, &transientState->frameState.meshRenderState);
+                    }
+                    if (y == 0 || appState->blocks[z][y - 1][x] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * right, &transientState->frameState.meshRenderState);
+                    }
+                    if (x == BLOCKS_SIZE_X - 1 || appState->blocks[z][y][x + 1] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * front, &transientState->frameState.meshRenderState);
+                    }
+                    if (x == 0 || appState->blocks[z][y][x - 1] == BlockId::NONE) {
+                        PushMesh(MeshId::TILE, posTransform * scale * back, &transientState->frameState.meshRenderState);
+                    }
                 }
             }
         }
