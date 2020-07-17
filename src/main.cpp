@@ -44,6 +44,7 @@ internal TransientState* GetTransientState(AppMemory* memory)
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
+    UNREFERENCED_PARAMETER(queue);
     UNREFERENCED_PARAMETER(audio);
 
     AppState* appState = GetAppState(memory);
