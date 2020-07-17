@@ -7,13 +7,7 @@
 
 enum class MeshId
 {
-    TILE_FRONT,
-    TILE_BACK,
-    TILE_LEFT,
-    TILE_RIGHT,
-    TILE_TOP,
-    TILE_BOTTOM,
-
+    TILE,
     MOB,
 
     COUNT
@@ -42,10 +36,10 @@ struct VulkanLightmapMeshPipeline
 struct VulkanMeshPipeline
 {
     static const uint32 MAX_MESHES = (uint32)MeshId::COUNT;
-    static const uint32 MAX_INSTANCES = 128 * 128;
+    static const uint32 MAX_INSTANCES = 128 * 128 * 128;
 
     StaticArray<uint32, MAX_MESHES> numVertices;
-    StaticArray<VulkanBuffer, MAX_MESHES> vertexBuffers;
+    VulkanBuffer vertexBuffer;
     VulkanBuffer instanceBuffer;
     VulkanBuffer uniformBuffer;
 

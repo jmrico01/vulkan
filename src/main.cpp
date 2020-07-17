@@ -15,14 +15,15 @@
 #include "lightmap.h"
 
 #define ENABLE_THREADS 1
-#define ENABLE_LIGHTMAPPED_MESH 1
+#define ENABLE_LIGHTMAPPED_MESH 0
 
 // Required for platform main
 const char* WINDOW_NAME = "vulkan";
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
+const bool WINDOW_LOCK_CURSOR = true;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
-const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(256);
+const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(512);
 
 internal AppState* GetAppState(AppMemory* memory)
 {
@@ -59,80 +60,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraPos = Vec3 { -1.0f, 0.0f, 1.0f };
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        // TODO this should run on window recreation, fullscreen wipes all sprites
-        // Sprites
-        {
-            const char* spriteFilePaths[] = {
-                "data/sprites/jon.png",
-                "data/sprites/rock.png"
-            };
-
-            for (uint32 i = 0; i < C_ARRAY_LENGTH(spriteFilePaths); i++) {
-                int width, height, channels;
-                unsigned char* imageData = stbi_load(spriteFilePaths[i], &width, &height, &channels, 0);
-                if (imageData == NULL) {
-                    DEBUG_PANIC("Failed to load sprite: %s\n", spriteFilePaths[i]);
-                }
-                defer(stbi_image_free(imageData));
-
-                VulkanImage sprite;
-                if (!LoadVulkanImage(vulkanState.window.device, vulkanState.window.physicalDevice,
-                                     vulkanState.window.graphicsQueue, appState->vulkanAppState.commandPool,
-                                     width, height, channels, (const uint8*)imageData, &sprite)) {
-                    DEBUG_PANIC("Failed to Vulkan image for sprite %s\n", spriteFilePaths[i]);
-                }
-
-                uint32 spriteIndex;
-                if (!RegisterSprite(vulkanState.window.device, &appState->vulkanAppState.spritePipeline, sprite,
-                                    &spriteIndex)) {
-                    DEBUG_PANIC("Failed to register sprite %s\n", spriteFilePaths[i]);
-                }
-                DEBUG_ASSERT(spriteIndex == i);
-            }
-        }
-
-        // TODO this should run on window recreation, fullscreen wipes all fonts
-        // Fonts
-        {
-            LinearAllocator allocator(transientState->scratch);
-
-            struct FontData {
-                const_string filePath;
-                uint32 height;
-            };
-            const FontData fontData[] = {
-                { ToString("data/fonts/ocr-a/regular.ttf"), 18 },
-                { ToString("data/fonts/ocr-a/regular.ttf"), 24 },
-            };
-
-            FT_Library ftLibrary;
-            FT_Error error = FT_Init_FreeType(&ftLibrary);
-            if (error) {
-                DEBUG_PANIC("FreeType init error: %d\n", error);
-            }
-
-            for (uint32 i = 0; i < C_ARRAY_LENGTH(fontData); i++) {
-                LoadFontFaceResult fontFace;
-                if (!LoadFontFace(ftLibrary, fontData[i].filePath, fontData[i].height, &allocator, &fontFace)) {
-                    DEBUG_PANIC("Failed to load font face at %.*s\n", fontData[i].filePath.size, fontData[i].filePath.data);
-                }
-
-                appState->fontFaces[i].height = fontFace.height;
-                appState->fontFaces[i].glyphInfo.FromArray(fontFace.glyphInfo);
-
-                VulkanImage fontAtlas;
-                if (!LoadVulkanImage(vulkanState.window.device, vulkanState.window.physicalDevice,
-                                     vulkanState.window.graphicsQueue, appState->vulkanAppState.commandPool,
-                                     fontFace.atlasWidth, fontFace.atlasHeight, 1, fontFace.atlasData, &fontAtlas)) {
-                    DEBUG_PANIC("Failed to Vulkan image for font atlas %lu\n", i);
-                }
-
-                uint32 fontIndex;
-                if (!RegisterFont(vulkanState.window.device, &appState->vulkanAppState.textPipeline, fontAtlas,
-                                  &fontIndex)) {
-                    DEBUG_PANIC("Failed to register font %lu\n", i);
-                }
-                DEBUG_ASSERT(fontIndex == i);
+        static_assert(BLOCK_ORIGIN_Z > 0);
+        MemSet(appState->blocks, 0, sizeof(appState->blocks));
+        for (uint32 y = 0; y < BLOCKS_SIZE_Y; y++) {
+            for (uint32 x = 0; x < BLOCKS_SIZE_X; x++) {
+                appState->blocks[BLOCK_ORIGIN_Z - 1][y][x] = BlockId::BLOCK;
             }
         }
 
@@ -176,16 +108,15 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     appState->totalElapsed += deltaTime;
 
     const float32 cameraSensitivity = 2.0f;
-    if (MouseDown(input, KM_MOUSE_LEFT)) {
-        const Vec2 mouseDeltaFrac = {
-            (float32)input.mouseDelta.x / (float32)screenSize.x,
-            (float32)input.mouseDelta.y / (float32)screenSize.y
-        };
-        appState->cameraAngles += mouseDeltaFrac * cameraSensitivity;
+    const Vec2 mouseDeltaFrac = {
+        (float32)input.mouseDelta.x / (float32)screenSize.x,
+        (float32)input.mouseDelta.y / (float32)screenSize.y
+    };
+    appState->cameraAngles.x += mouseDeltaFrac.x * cameraSensitivity;
+    appState->cameraAngles.y -= mouseDeltaFrac.y * cameraSensitivity;
 
-        appState->cameraAngles.x = ModFloat32(appState->cameraAngles.x, PI_F * 2.0f);
-        appState->cameraAngles.y = ClampFloat32(appState->cameraAngles.y, -PI_F, PI_F);
-    }
+    appState->cameraAngles.x = ModFloat32(appState->cameraAngles.x, PI_F * 2.0f);
+    appState->cameraAngles.y = ClampFloat32(appState->cameraAngles.y, -PI_F, PI_F);
 
     const Quat cameraRotYaw = QuatFromAngleUnitAxis(appState->cameraAngles.x, Vec3::unitZ);
     const Quat cameraRotPitch = QuatFromAngleUnitAxis(appState->cameraAngles.y, Vec3::unitY);
@@ -195,25 +126,38 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Vec3 cameraRight = cameraRotYawInv * -Vec3::unitY;
     const Vec3 cameraUp = Vec3::unitZ;
 
-    const float32 speed = 2.0f;
+    float32 speed = 3.0f;
+    if (KeyDown(input, KM_KEY_SHIFT)) {
+        speed *= 2.0f;
+    }
+
+    Vec3 velocity = Vec3::zero;
     if (KeyDown(input, KM_KEY_W)) {
-        appState->cameraPos += speed * cameraForward * deltaTime;
+        velocity += cameraForward;
     }
     if (KeyDown(input, KM_KEY_S)) {
-        appState->cameraPos -= speed * cameraForward * deltaTime;
+        velocity -= cameraForward;
     }
     if (KeyDown(input, KM_KEY_A)) {
-        appState->cameraPos -= speed * cameraRight * deltaTime;
+        velocity -= cameraRight;
     }
     if (KeyDown(input, KM_KEY_D)) {
-        appState->cameraPos += speed * cameraRight * deltaTime;
+        velocity += cameraRight;
     }
+
+    if (velocity != Vec3::zero) {
+        velocity = Normalize(velocity) * speed * deltaTime;
+        appState->cameraPos += velocity;
+    }
+
+#if 0
     if (KeyDown(input, KM_KEY_SPACE)) {
         appState->cameraPos += speed * cameraUp * deltaTime;
     }
     if (KeyDown(input, KM_KEY_SHIFT)) {
         appState->cameraPos -= speed * cameraUp * deltaTime;
     }
+#endif
 
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
     const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
@@ -234,7 +178,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     for (uint32 i = 0; i < NUM_JONS; i++) {
         const Vec2Int pos = { RandInt(0, screenSize.x), RandInt(0, screenSize.y) };
         const Vec2Int size = { RandInt(50, 300), RandInt(50, 300) };
-        PushSprite(SpriteId::JON, pos, size, 0.5f, screenSize, &transientState->frameState.spriteRenderState);
+        PushSprite((uint32)SpriteId::JON, pos, size, 0.5f, screenSize, &transientState->frameState.spriteRenderState);
     }
 
     const uint32 fontIndex = (uint32)FontId::OCR_A_REGULAR_18;
@@ -243,19 +187,38 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     PushText(fontIndex, appState->fontFaces[fontIndex], text, Vec2Int { 100, 100 }, 0.0f, screenSize, textColor,
              &transientState->frameState.textRenderState);
 
-    for (uint32 i = 0; i < 10; i++) {
-        const Mat4 modelMob = Translate(Vec3 { 1.0f * i, 0.5f * i, 0.0f });
+    // Draw blocks
+    {
+        const Mat4 top    = Translate(Vec3::unitZ);
+        const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f })));
+        const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) *
+            UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitX));
+        const Mat4 right  = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX));
+        const Mat4 front  = Translate(Vec3 { 1.0f, 0.0f, 1.0f }) *
+            UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitY));
+        const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY));
 
-        // PushMesh(MeshId::MOB, modelMob, &transientState->frameState.meshRenderState);
+        for (uint32 z = 0; z < BLOCKS_SIZE_Z; z++) {
+            for (uint32 y = 0; y < BLOCKS_SIZE_Y; y++) {
+                for (uint32 x = 0; x < BLOCKS_SIZE_X; x++) {
+                    if (appState->blocks[z][y][x] == BlockId::NONE) continue;
 
-        // PushMesh(MeshId::TILE_BACK, modelMob, &transientState->frameState.meshRenderState);
+                    const Vec3 pos = {
+                        (float32)((int)x - (int)BLOCK_ORIGIN_X),
+                        (float32)((int)y - (int)BLOCK_ORIGIN_Y),
+                        (float32)((int)z - (int)BLOCK_ORIGIN_Z),
+                    };
+                    const Mat4 posTransform = Translate(pos);
+                    PushMesh(MeshId::TILE, posTransform * top,    &transientState->frameState.meshRenderState);
+                    PushMesh(MeshId::TILE, posTransform * bottom, &transientState->frameState.meshRenderState);
+                    PushMesh(MeshId::TILE, posTransform * left,   &transientState->frameState.meshRenderState);
+                    PushMesh(MeshId::TILE, posTransform * right,  &transientState->frameState.meshRenderState);
+                    PushMesh(MeshId::TILE, posTransform * front,  &transientState->frameState.meshRenderState);
+                    PushMesh(MeshId::TILE, posTransform * back,   &transientState->frameState.meshRenderState);
+                }
+            }
+        }
     }
-
-    const Mat4 modelTile = Translate(Vec3 { 0.0f, 0.0f, 0.5f });
-    //PushMesh(MeshId::TILE_FRONT, modelTile, &transientState->frameState.meshRenderState);
-    PushMesh(MeshId::TILE_RIGHT, modelTile, &transientState->frameState.meshRenderState);
-    PushMesh(MeshId::TILE_TOP, modelTile, &transientState->frameState.meshRenderState);
-    //PushMesh(MeshId::TILE_BOTTOM, modelTile, &transientState->frameState.meshRenderState);
 
     // ================================================================================================
     // Vulkan rendering ===============================================================================
@@ -420,7 +383,8 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
 
     const VulkanWindow& window = vulkanState.window;
 
-    VulkanAppState* app = &(GetAppState(memory)->vulkanAppState);
+    AppState* appState = GetAppState(memory);
+    VulkanAppState* app = &appState->vulkanAppState;
     TransientState* transientState = GetTransientState(memory);
     LinearAllocator allocator(transientState->scratch);
 
@@ -491,6 +455,75 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
         return false;
     }
 #endif
+
+    // Sprites
+    {
+        const char* spriteFilePaths[] = {
+            "data/sprites/jon.png",
+            "data/sprites/rock.png"
+        };
+
+        for (uint32 i = 0; i < C_ARRAY_LENGTH(spriteFilePaths); i++) {
+            int width, height, channels;
+            unsigned char* imageData = stbi_load(spriteFilePaths[i], &width, &height, &channels, 0);
+            if (imageData == NULL) {
+                DEBUG_PANIC("Failed to load sprite: %s\n", spriteFilePaths[i]);
+            }
+            defer(stbi_image_free(imageData));
+
+            VulkanImage sprite;
+            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
+                                 width, height, channels, (const uint8*)imageData, &sprite)) {
+                DEBUG_PANIC("Failed to Vulkan image for sprite %s\n", spriteFilePaths[i]);
+            }
+
+            uint32 spriteIndex;
+            if (!RegisterSprite(window.device, &app->spritePipeline, sprite, &spriteIndex)) {
+                DEBUG_PANIC("Failed to register sprite %s\n", spriteFilePaths[i]);
+            }
+            DEBUG_ASSERT(spriteIndex == i);
+        }
+    }
+
+    // Fonts
+    {
+        struct FontData {
+            const_string filePath;
+            uint32 height;
+        };
+        const FontData fontData[] = {
+            { ToString("data/fonts/ocr-a/regular.ttf"), 18 },
+            { ToString("data/fonts/ocr-a/regular.ttf"), 24 },
+        };
+
+        FT_Library ftLibrary;
+        FT_Error error = FT_Init_FreeType(&ftLibrary);
+        if (error) {
+            DEBUG_PANIC("FreeType init error: %d\n", error);
+        }
+
+        for (uint32 i = 0; i < C_ARRAY_LENGTH(fontData); i++) {
+            LoadFontFaceResult fontFace;
+            if (!LoadFontFace(ftLibrary, fontData[i].filePath, fontData[i].height, &allocator, &fontFace)) {
+                DEBUG_PANIC("Failed to load font face at %.*s\n", fontData[i].filePath.size, fontData[i].filePath.data);
+            }
+
+            appState->fontFaces[i].height = fontFace.height;
+            appState->fontFaces[i].glyphInfo.FromArray(fontFace.glyphInfo);
+
+            VulkanImage fontAtlas;
+            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
+                                 fontFace.atlasWidth, fontFace.atlasHeight, 1, fontFace.atlasData, &fontAtlas)) {
+                DEBUG_PANIC("Failed to Vulkan image for font atlas %lu\n", i);
+            }
+
+            uint32 fontIndex;
+            if (!RegisterFont(window.device, &app->textPipeline, fontAtlas, &fontIndex)) {
+                DEBUG_PANIC("Failed to register font %lu\n", i);
+            }
+            DEBUG_ASSERT(fontIndex == i);
+        }
+    }
 
     return true;
 }

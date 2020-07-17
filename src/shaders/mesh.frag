@@ -15,6 +15,5 @@ void main()
 	float gamma = 2.2;
 	vec3 colorGammaCorrected = pow(inColor, vec3(gamma));
 
-	// outColor = vec4(colorGammaCorrected, 1.0);
-	outColor = vec4(1.0, 1.0, 1.0, 1.0);
+	outColor = vec4(colorGammaCorrected, 1.0);
 }

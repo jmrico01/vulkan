@@ -14,7 +14,21 @@
 
 #include "mesh.h"
 
-enum SpriteId
+const uint32 BLOCKS_SIZE_X = 64;
+const uint32 BLOCKS_SIZE_Y = 64;
+const uint32 BLOCKS_SIZE_Z = 16;
+
+const uint32 BLOCK_ORIGIN_X = BLOCKS_SIZE_X / 2;
+const uint32 BLOCK_ORIGIN_Y = BLOCKS_SIZE_Y / 2;
+const uint32 BLOCK_ORIGIN_Z = 1;
+
+enum class BlockId
+{
+    NONE = 0,
+    BLOCK,
+};
+
+enum class SpriteId
 {
     JON,
     ROCK,
@@ -48,6 +62,7 @@ struct AppState
     VulkanAppState vulkanAppState;
     FontFace fontFaces[FontId::COUNT];
 
+    BlockId blocks[BLOCKS_SIZE_Z][BLOCKS_SIZE_Y][BLOCKS_SIZE_X];
     float32 totalElapsed;
     Vec3 cameraPos;
     Vec2 cameraAngles;

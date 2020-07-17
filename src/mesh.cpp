@@ -177,6 +177,8 @@ internal VulkanLightmapMeshGeometry ObjToVulkanLightmapMeshGeometry(const LoadOb
 void PushMesh(MeshId meshId, Mat4 model, VulkanMeshRenderState* renderState)
 {
     const uint32 meshIndex = (uint32)meshId;
+    DEBUG_ASSERT(meshIndex < renderState->meshInstanceData.SIZE);
+
     VulkanMeshInstanceData* instanceData = renderState->meshInstanceData[meshIndex].Append();
     instanceData->model = model;
 }
@@ -206,11 +208,12 @@ void UploadAndSubmitMeshDrawCommands(VkDevice device, VkCommandBuffer commandBuf
     }
 
     Array<VulkanMeshInstanceData> instanceData = allocator->NewArray<VulkanMeshInstanceData>(totalNumInstances);
-    uint32 byteOffset = 0;
+    uint32 instanceOffset = 0;
     for (uint32 i = 0; i < meshPipeline.MAX_MESHES; i++) {
-        const uint32 numBytes = meshNumInstances[i] * sizeof(VulkanMeshInstanceData);
-        MemCopy(instanceData.data + byteOffset, renderState.meshInstanceData[i].data, numBytes);
-        byteOffset += numBytes;
+        const uint32 instances = meshNumInstances[i];
+        MemCopy(instanceData.data + instanceOffset,
+                renderState.meshInstanceData[i].data, instances * sizeof(VulkanMeshInstanceData));
+        instanceOffset += instances;
     }
 
     if (instanceData.size > 0) {
@@ -229,23 +232,25 @@ void UploadAndSubmitMeshDrawCommands(VkDevice device, VkCommandBuffer commandBuf
     vkUnmapMemory(device, meshPipeline.uniformBuffer.memory);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipeline);
+
+    const VkBuffer vertexBuffers[] = {
+        meshPipeline.vertexBuffer.buffer,
+        meshPipeline.instanceBuffer.buffer
+    };
+    const VkDeviceSize offsets[] = { 0, 0 };
+    vkCmdBindVertexBuffers(commandBuffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
+
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline.pipelineLayout, 0, 1,
                             &meshPipeline.descriptorSet, 0, nullptr);
 
+    uint32 startVertex = 0;
     uint32 startInstance = 0;
     for (uint32 i = 0; i < meshPipeline.MAX_MESHES; i++) {
         if (meshNumInstances[i] > 0) {
-            // TODO eesh, I gotta bind them both, but I'm only really changing the vertex buffer
-            const VkBuffer vertexBuffers[] = {
-                meshPipeline.vertexBuffers[i].buffer,
-                meshPipeline.instanceBuffer.buffer
-            };
-            const VkDeviceSize offsets[] = { 0, 0 };
-            vkCmdBindVertexBuffers(commandBuffer, 0, C_ARRAY_LENGTH(vertexBuffers), vertexBuffers, offsets);
-
-            vkCmdDraw(commandBuffer, meshPipeline.numVertices[i], meshNumInstances[i], 0, startInstance);
+            vkCmdDraw(commandBuffer, meshPipeline.numVertices[i], meshNumInstances[i], startVertex, startInstance);
             startInstance += meshNumInstances[i];
         }
+        startVertex += meshPipeline.numVertices[i];
     }
 }
 
@@ -505,131 +510,24 @@ bool LoadMeshPipelineWindow(const VulkanWindow& window, VkCommandPool commandPoo
 {
     // Create vertex buffers
     {
+        ALLOCATOR_SCOPE_RESET(*allocator);
+        DynamicArray<VulkanMeshVertex, LinearAllocator> vertices(allocator);
+
         const Vec3 color = Vec3::one;
-
-        struct StaticMeshQuad {
-            MeshId id;
-            StaticArray<VulkanMeshVertex, 6> vertices;
+        const StaticArray<VulkanMeshVertex, 6> tileVertices = {
+            .data = {
+                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
+                { { 0.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
+                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
+                { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
+                { { 1.0f, 0.0f, 0.0f }, Vec3::unitZ, color, },
+                { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
+            }
         };
 
-        const StaticMeshQuad staticMeshQuads[] = {
-            {
-                .id = MeshId::TILE_FRONT,
-                .vertices = {
-                    .data = {
-                        { { 0.0f, 0.0f, 0.0f }, Vec3::unitX, color * 0.8f, },
-                        { { 0.0f, 0.0f, 1.0f }, Vec3::unitX, color, },
-                        { { 0.0f, 1.0f, 1.0f }, Vec3::unitX, color, },
-                        { { 0.0f, 1.0f, 1.0f }, Vec3::unitX, color, },
-                        { { 0.0f, 1.0f, 0.0f }, Vec3::unitX, color, },
-                        { { 0.0f, 0.0f, 0.0f }, Vec3::unitX, color * 0.8f, },
-                    }
-                }
-            },
-            {
-                .id = MeshId::TILE_BACK,
-                .vertices = {
-                    .data = {
-                        { { 0.0f,  0.0f, 0.0f }, -Vec3::unitX, color * 0.8f, },
-                        { { 0.0f,  0.0f, 1.0f }, -Vec3::unitX, color, },
-                        { { 0.0f, -1.0f, 1.0f }, -Vec3::unitX, color, },
-                        { { 0.0f, -1.0f, 1.0f }, -Vec3::unitX, color, },
-                        { { 0.0f, -1.0f, 0.0f }, -Vec3::unitX, color, },
-                        { { 0.0f,  0.0f, 0.0f }, -Vec3::unitX, color * 0.8f, },
-                    }
-                }
-            },
-            {
-                .id = MeshId::TILE_LEFT,
-                .vertices = {
-                    .data = {
-                        { {  0.0f, 0.0f, 0.0f }, Vec3::unitY, color * 0.8f, },
-                        { {  0.0f, 0.0f, 1.0f }, Vec3::unitY, color, },
-                        { { -1.0f, 0.0f, 1.0f }, Vec3::unitY, color, },
-                        { { -1.0f, 0.0f, 1.0f }, Vec3::unitY, color, },
-                        { { -1.0f, 0.0f, 0.0f }, Vec3::unitY, color, },
-                        { {  0.0f, 0.0f, 0.0f }, Vec3::unitY, color * 0.8f, },
-                    }
-                }
-            },
-            {
-                .id = MeshId::TILE_RIGHT,
-                .vertices = {
-                    .data = {
-                        { { 0.0f, 0.0f, 0.0f }, -Vec3::unitY, color * 0.8f, },
-                        { { 0.0f, 0.0f, 1.0f }, -Vec3::unitY, color, },
-                        { { 1.0f, 0.0f, 1.0f }, -Vec3::unitY, color, },
-                        { { 1.0f, 0.0f, 1.0f }, -Vec3::unitY, color, },
-                        { { 1.0f, 0.0f, 0.0f }, -Vec3::unitY, color, },
-                        { { 0.0f, 0.0f, 0.0f }, -Vec3::unitY, color * 0.8f, },
-                    }
-                }
-            },
-            {
-                .id = MeshId::TILE_TOP,
-                .vertices = {
-                    .data = {
-                        { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
-                        { { 0.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                        { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                        { { 1.0f, 1.0f, 0.0f }, Vec3::unitZ, color, },
-                        { { 1.0f, 0.0f, 0.0f }, Vec3::unitZ, color, },
-                        { { 0.0f, 0.0f, 0.0f }, Vec3::unitZ, color * 0.8f, },
-                    }
-                }
-            },
-            {
-                .id = MeshId::TILE_BOTTOM,
-                .vertices = {
-                    .data = {
-                        { {  0.0f, 0.0f, 0.0f }, -Vec3::unitZ, color * 0.8f, },
-                        { {  0.0f, 1.0f, 0.0f }, -Vec3::unitZ, color, },
-                        { { -1.0f, 1.0f, 0.0f }, -Vec3::unitZ, color, },
-                        { { -1.0f, 1.0f, 0.0f }, -Vec3::unitZ, color, },
-                        { { -1.0f, 0.0f, 0.0f }, -Vec3::unitZ, color, },
-                        { {  0.0f, 0.0f, 0.0f }, -Vec3::unitZ, color * 0.8f, },
-                    }
-                }
-            },
-        };
-
-        for (uint32 i = 0; i < C_ARRAY_LENGTH(staticMeshQuads); i++) {
-            const uint32 numVertices = 6;
-            const VkDeviceSize vertexBufferSize = numVertices * sizeof(VulkanMeshVertex);
-
-            VulkanBuffer stagingBuffer;
-            if (!CreateVulkanBuffer(vertexBufferSize,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                    window.device, window.physicalDevice, &stagingBuffer)) {
-                LOG_ERROR("CreateBuffer failed for staging buffer\n");
-                return false;
-            }
-
-            // Copy vertex data from CPU into memory-mapped staging buffer
-            void* data;
-            vkMapMemory(window.device, stagingBuffer.memory, 0, vertexBufferSize, 0, &data);
-            MemCopy(data, staticMeshQuads[i].vertices.data, vertexBufferSize);
-            vkUnmapMemory(window.device, stagingBuffer.memory);
-
-            const uint32 meshIndex = (uint32)staticMeshQuads[i].id;
-
-            meshPipeline->numVertices[meshIndex] = numVertices;
-            VulkanBuffer* buffer = &meshPipeline->vertexBuffers[meshIndex];
-            if (!CreateVulkanBuffer(vertexBufferSize,
-                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                    window.device, window.physicalDevice, buffer)) {
-                LOG_ERROR("CreateBuffer failed for vertex buffer\n");
-                return false;
-            }
-
-            // Copy vertex data from staging buffer into GPU vertex buffer
-            CopyBuffer(window.device, commandPool, window.graphicsQueue, stagingBuffer.buffer,
-                       buffer->buffer, vertexBufferSize);
-
-            DestroyVulkanBuffer(window.device, &stagingBuffer);
-        }
+        static_assert((uint32)MeshId::TILE == 0);
+        meshPipeline->numVertices[0] = tileVertices.SIZE;
+        vertices.Append(tileVertices.ToArray());
 
         struct ObjMesh {
             MeshId id;
@@ -653,41 +551,46 @@ bool LoadMeshPipelineWindow(const VulkanWindow& window, VkCommandPool commandPoo
                 return false;
             }
 
-            const VkDeviceSize vertexBufferSize = geometry.triangles.size * 3 * sizeof(VulkanMeshVertex);
-
-            VulkanBuffer stagingBuffer;
-            if (!CreateVulkanBuffer(vertexBufferSize,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                    window.device, window.physicalDevice, &stagingBuffer)) {
-                LOG_ERROR("CreateBuffer failed for staging buffer\n");
-                return false;
-            }
-
-            // Copy vertex data from CPU into memory-mapped staging buffer
-            void* data;
-            vkMapMemory(window.device, stagingBuffer.memory, 0, vertexBufferSize, 0, &data);
-            MemCopy(data, geometry.triangles.data, vertexBufferSize);
-            vkUnmapMemory(window.device, stagingBuffer.memory);
+            const Array<VulkanMeshVertex> objVertices = {
+                .size = geometry.triangles.size * 3,
+                .data = &geometry.triangles[0][0]
+            };
 
             const uint32 meshIndex = (uint32)objMeshes[i].id;
-
-            meshPipeline->numVertices[meshIndex] = geometry.triangles.size * 3;
-            VulkanBuffer* buffer = &meshPipeline->vertexBuffers[meshIndex];
-            if (!CreateVulkanBuffer(vertexBufferSize,
-                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                    window.device, window.physicalDevice, buffer)) {
-                LOG_ERROR("CreateBuffer failed for vertex buffer\n");
-                return false;
-            }
-
-            // Copy vertex data from staging buffer into GPU vertex buffer
-            CopyBuffer(window.device, commandPool, window.graphicsQueue, stagingBuffer.buffer,
-                       buffer->buffer, vertexBufferSize);
-
-            DestroyVulkanBuffer(window.device, &stagingBuffer);
+            meshPipeline->numVertices[meshIndex] = objVertices.size;
+            vertices.Append(objVertices);
         }
+
+        const VkDeviceSize vertexBufferSize = vertices.size * sizeof(VulkanMeshVertex);
+
+        VulkanBuffer stagingBuffer;
+        if (!CreateVulkanBuffer(vertexBufferSize,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                window.device, window.physicalDevice, &stagingBuffer)) {
+            LOG_ERROR("CreateBuffer failed for staging buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from CPU into memory-mapped staging buffer
+        void* data;
+        vkMapMemory(window.device, stagingBuffer.memory, 0, vertexBufferSize, 0, &data);
+        MemCopy(data, vertices.data, vertexBufferSize);
+        vkUnmapMemory(window.device, stagingBuffer.memory);
+
+        if (!CreateVulkanBuffer(vertexBufferSize,
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                window.device, window.physicalDevice, &meshPipeline->vertexBuffer)) {
+            LOG_ERROR("CreateBuffer failed for vertex buffer\n");
+            return false;
+        }
+
+        // Copy vertex data from staging buffer into GPU vertex buffer
+        CopyBuffer(window.device, commandPool, window.graphicsQueue, stagingBuffer.buffer,
+                   meshPipeline->vertexBuffer.buffer, vertexBufferSize);
+
+        DestroyVulkanBuffer(window.device, &stagingBuffer);
     }
 
     // Create instance buffer
@@ -795,9 +698,7 @@ void UnloadMeshPipelineWindow(VkDevice device, VulkanMeshPipeline* meshPipeline)
 
     DestroyVulkanBuffer(device, &meshPipeline->uniformBuffer);
     DestroyVulkanBuffer(device, &meshPipeline->instanceBuffer);
-    for (uint32 i = 0; i < meshPipeline->vertexBuffers.SIZE; i++) {
-        DestroyVulkanBuffer(device, &meshPipeline->vertexBuffers[i]);
-    }
+    DestroyVulkanBuffer(device, &meshPipeline->vertexBuffer);
 }
 
 bool LoadLightmapMeshPipelineSwapchain(const VulkanWindow& window, const VulkanSwapchain& swapchain, LinearAllocator* allocator, VulkanLightmapMeshPipeline* lightmapMeshPipeline)
