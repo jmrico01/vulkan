@@ -15,7 +15,8 @@ TARGET_APP = BuildTarget("vulkan",
                 # "-GS-",       # Disable stack security cookie for CRT removal
                 # "-Gs9999999", # Only generate stack probe for stack > 9999999 (so like never)
 
-                "-wd4201",    # nonstandard extension used: nameless struct/union
+                "-wd4201", # nonstandard extension used: nameless struct/union
+                "-wd4458", # declaration of X hides class member
                 "-I\"" + WIN32_VULKAN_PATH + "\\Include\"", # TODO HACK
             ],
             linker_flags=[

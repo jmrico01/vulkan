@@ -12,6 +12,7 @@
 #include <km_common/km_string.h>
 #include <km_common/app/km_app.h>
 
+#include "imgui.h"
 #include "lightmap.h"
 
 #define ENABLE_THREADS 1
@@ -261,16 +262,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const float32 farZ = 100.0f;
     const Mat4 proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
-    const uint32 fontIndex = (uint32)FontId::OCR_A_REGULAR_18;
-    const_string text = ToString("the quick brown fox jumps over the lazy dog");
-    const Vec4 textColor = Vec4::one;
-    PushText(fontIndex, appState->fontFaces[fontIndex], text, Vec2Int { 100, 100 }, 0.0f, textColor, screenSize,
-             &transientState->frameState.textRenderState);
-
-    const Vec4 rectColor = Vec4 { 1.0f, 0.6f, 0.6f, 1.0f };
-    PushSprite((uint32)SpriteId::PIXEL, Vec2Int { 100, 300 }, Vec2Int { 400, 50 }, 0.0f, rectColor, screenSize,
-               &transientState->frameState.spriteRenderState);
-
     // Draw blocks
     {
         const Mat4 scale = Scale(Vec3 { BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE });
@@ -338,6 +329,72 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 }
             }
         }
+    }
+
+#if 0
+    // Test text rendering / bounding boxes
+    {
+        const VulkanFontFace& font = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
+
+        const Vec4 textColor = Vec4::one;
+        const Vec4 outlineColor = Vec4 { 1.0f, 0.6f, 0.6f, 1.0f };
+        const int outlineThickness = 2;
+        const_string text = ToString("the quick brown fox jumps over the lazy dog");
+        const uint32 textWidth = GetTextWidth(font, text);
+
+        const Vec2Int origin1 = { 200, 200 };
+        PushText(font, text, origin1, 0.0f, textColor, screenSize, &transientState->frameState.textRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin1, Vec2Int { (int)textWidth, outlineThickness }, 0.0f,
+                   outlineColor, screenSize, &transientState->frameState.spriteRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin1 - Vec2Int { 0, (int)font.height }, Vec2Int { outlineThickness, (int)font.height }, 0.0f,
+                   outlineColor, screenSize, &transientState->frameState.spriteRenderState);
+
+        const Vec2Int origin2 = { 600, 600 };
+        PushText(font, text, origin2, 0.0f, 0.5f, textColor, screenSize, &transientState->frameState.textRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin2, Vec2Int { (int)textWidth, outlineThickness }, 0.0f, Vec2 { 0.5f, 0.0f }, outlineColor,
+                   screenSize, &transientState->frameState.spriteRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin2 - Vec2Int { 0, (int)font.height }, Vec2Int { outlineThickness, (int)font.height },
+                   0.0f, Vec2 { 0.5f, 0.0f }, outlineColor,
+                   screenSize, &transientState->frameState.spriteRenderState);
+
+        const Vec2Int origin3 = { screenSize.x - 200, 200 };
+        PushText(font, text, origin3, 0.0f, 1.0f, textColor, screenSize, &transientState->frameState.textRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin3, Vec2Int { (int)textWidth, outlineThickness }, 0.0f, Vec2 { 1.0f, 0.0f }, outlineColor,
+                   screenSize, &transientState->frameState.spriteRenderState);
+        PushSprite((uint32)SpriteId::PIXEL,
+                   origin3 - Vec2Int { 0, (int)font.height }, Vec2Int { outlineThickness, (int)font.height },
+                   0.0f, Vec2 { 1.0f, 0.0f }, outlineColor,
+                   screenSize, &transientState->frameState.spriteRenderState);
+    }
+#endif
+
+    {
+        LinearAllocator allocator(transientState->scratch);
+
+        const VulkanFontFace& fontNormal = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
+        const VulkanFontFace& fontTitle = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_24];
+        const Vec2Int panelOrigin = { 100, 100 };
+        const Vec4 backgroundColor = Vec4 { 0.0f, 0.0f, 0.0f, 0.5f };
+
+        Panel testPanel(&allocator);
+        testPanel.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelOrigin, Vec2::zero);
+        testPanel.TitleBar(ToString("Testing this panel"), nullptr, Vec4::zero, &fontTitle);
+
+        testPanel.Text(ToString("Hello, sailor"));
+        testPanel.Text(ToString("..."));
+
+        if (testPanel.Button(ToString("Press Me"))) {
+            LOG_INFO("HELLO!\n");
+        }
+
+        testPanel.Draw(Vec2Int::zero, Vec4::one, backgroundColor, screenSize,
+                       &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+
     }
 
     // ================================================================================================
@@ -644,25 +701,15 @@ APP_LOAD_VULKAN_WINDOW_STATE_FUNCTION(AppLoadVulkanWindowState)
         }
 
         for (uint32 i = 0; i < C_ARRAY_LENGTH(fontData); i++) {
-            LoadFontFaceResult fontFace;
-            if (!LoadFontFace(ftLibrary, fontData[i].filePath, fontData[i].height, &allocator, &fontFace)) {
+            LoadFontFaceResult fontFaceResult;
+            if (!LoadFontFace(ftLibrary, fontData[i].filePath, fontData[i].height, &allocator, &fontFaceResult)) {
                 DEBUG_PANIC("Failed to load font face at %.*s\n", fontData[i].filePath.size, fontData[i].filePath.data);
             }
 
-            appState->fontFaces[i].height = fontFace.height;
-            appState->fontFaces[i].glyphInfo.FromArray(fontFace.glyphInfo);
-
-            VulkanImage fontAtlas;
-            if (!LoadVulkanImage(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
-                                 fontFace.atlasWidth, fontFace.atlasHeight, 1, fontFace.atlasData, &fontAtlas)) {
-                DEBUG_PANIC("Failed to Vulkan image for font atlas %lu\n", i);
-            }
-
-            uint32 fontIndex;
-            if (!RegisterFont(window.device, &app->textPipeline, fontAtlas, &fontIndex)) {
+            if (!RegisterFont(window.device, window.physicalDevice, window.graphicsQueue, app->commandPool,
+                              &app->textPipeline, fontFaceResult, &appState->fontFaces[i])) {
                 DEBUG_PANIC("Failed to register font %lu\n", i);
             }
-            DEBUG_ASSERT(fontIndex == i);
         }
     }
 
@@ -688,6 +735,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
     vkDestroyCommandPool(device, app->commandPool, nullptr);
 }
 
+#include "imgui.cpp"
 #include "lightmap.cpp"
 #include "mesh.cpp"
 

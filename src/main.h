@@ -72,7 +72,7 @@ struct VulkanAppState
 struct AppState
 {
     VulkanAppState vulkanAppState;
-    FontFace fontFaces[FontId::COUNT];
+    VulkanFontFace fontFaces[FontId::COUNT];
 
     BlockGrid blockGrid;
 
