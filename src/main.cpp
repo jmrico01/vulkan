@@ -21,8 +21,6 @@
 /*
 TODO
 
-> improve the imgui input field a little (highlight on focus, error on invalid int value)
-> debug info display (FPS, etc)
 > layer-by-layer, block-by-block editor
 > post-process pipeline for grain
 
