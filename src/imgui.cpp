@@ -232,6 +232,8 @@ bool Panel::Checkbox(bool* value, const_string text, Vec4 color, const VulkanFon
 bool Panel::SliderFloat(PanelSliderState* state, float32 min, float32 max, const_string text, Vec4 color,
                         const VulkanFontFace* fontFace)
 {
+    UNREFERENCED_PARAMETER(text);
+
     DEBUG_ASSERT(state != nullptr);
     if (flags & PanelFlag::MINIMIZED) {
         return false;
