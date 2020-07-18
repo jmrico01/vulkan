@@ -138,8 +138,18 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        appState->noclipPos = startPos;
+        // Debug views 
+        appState->debugView = false;
+
         appState->noclip = false;
+        appState->noclipPos = startPos;
+
+        appState->cityGenMinimized = true;
+        appState->inputStreetSize.Initialize(DEFAULT_STREET_SIZE);
+        appState->inputSidewalkSize.Initialize(DEFAULT_SIDEWALK_SIZE);
+        appState->inputBuildingSize.Initialize(DEFAULT_BUILDING_SIZE);
+        appState->inputBuildingHeight.Initialize(DEFAULT_BUILDING_HEIGHT);
+        appState->sliderBlockSize.value = DEFAULT_BLOCK_SIZE;
 
         memory->initialized = true;
     }
@@ -182,6 +192,12 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         bool cursorLocked = IsCursorLocked();
         LockCursor(!cursorLocked);
     }
+    if (KeyPressed(input, KM_KEY_G)) {
+        appState->debugView = !appState->debugView;
+    }
+    if (KeyPressed(input, KM_KEY_N)) {
+        appState->noclip = !appState->noclip;
+    }
 
     const float32 cameraSensitivity = 2.0f;
     const Vec2 mouseDeltaFrac = {
@@ -206,7 +222,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     float32 speed = 5.0f;
     if (KeyDown(input, KM_KEY_SHIFT)) {
-        if (!IsCursorLocked()) {
+        if (appState->noclip) {
             speed *= 3.0f;
         }
         else {
@@ -227,7 +243,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     if (KeyDown(input, KM_KEY_D)) {
         velocity += cameraRight;
     }
-    if (!IsCursorLocked()) {
+    if (appState->noclip) {
         if (KeyDown(input, KM_KEY_SPACE)) {
             velocity += cameraUp;
         }
@@ -238,7 +254,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     if (velocity != Vec3::zero) {
         velocity = Normalize(velocity) * speed * deltaTime;
-        if (!IsCursorLocked()) {
+        if (appState->noclip) {
             appState->noclipPos += velocity;
         }
         else {
@@ -255,7 +271,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Mat4 baseCameraRotMat4 = UnitQuatToMat4(baseCameraRot);
 
     Mat4 view;
-    if (!IsCursorLocked()) {
+    if (appState->noclip) {
         view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->noclipPos);
     }
     else {
@@ -337,52 +353,79 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     }
 
     // Debug views
-    if (!IsCursorLocked()) {
+    if (appState->debugView) {
         LinearAllocator allocator(transientState->scratch);
 
         const VulkanFontFace& fontNormal = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
         const VulkanFontFace& fontTitle = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_24];
         const Vec4 backgroundColor = Vec4 { 0.0f, 0.0f, 0.0f, 0.5f };
+        const Vec2Int panelBorderSize = Vec2Int { 6, 8 };
+        const int panelPosMargin = 50;
 
-        static PanelInputIntState inputStreetSize(DEFAULT_STREET_SIZE);
-        static PanelInputIntState inputSidewalkSize(DEFAULT_SIDEWALK_SIZE);
-        static PanelInputIntState inputBuildingSize(DEFAULT_BUILDING_SIZE);
-        static PanelInputIntState inputBuildingHeight(DEFAULT_BUILDING_HEIGHT);
-        static PanelSliderState sliderBlockSize = { .value = DEFAULT_BLOCK_SIZE, .drag = false };
+        // General debug info
+        const Vec2Int panelDebugInfoPos = { screenSize.x - panelPosMargin, panelPosMargin };
+        Panel panelDebugInfo(&allocator);
+        panelDebugInfo.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelDebugInfoPos, 1.0f);
 
+        const int fps = (int)(1.0f / deltaTime);
+        const float32 frameMs = deltaTime * 1000.0f;
+        const_string frameTiming = AllocPrintf(&allocator, "%d fps | %.03f ms", fps, frameMs);
+        panelDebugInfo.Text(frameTiming);
+
+        panelDebugInfo.Text(string::empty);
+
+        bool cursorLocked = IsCursorLocked();
+        if (panelDebugInfo.Checkbox(&cursorLocked, ToString("cam lock (ESC)"))) {
+            LockCursor(cursorLocked);
+        }
+        panelDebugInfo.Checkbox(&appState->noclip, ToString("noclip (N)"));
+
+        panelDebugInfo.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
+                            &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+
+        // City block generator
+        const Vec2Int panelCityGenPos = { panelPosMargin, panelPosMargin };
         Panel panelCityGen(&allocator);
-        panelCityGen.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, Vec2Int { 100, 100 }, Vec2::zero);
+        panelCityGen.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelCityGenPos, 0.0f);
 
-        panelCityGen.TitleBar(ToString("City Block Generator"), nullptr, Vec4::zero, &fontTitle);
+        panelCityGen.TitleBar(ToString("City Block Generator"), &appState->cityGenMinimized, Vec4::zero, &fontTitle);
         const Vec4 inputTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
 
+        panelCityGen.Text(ToString("change parameters and"));
+        panelCityGen.Text(ToString("press \"Generate\""));
+        panelCityGen.Text(string::empty);
+
+        panelCityGen.Text(AllocPrintf(&allocator, "%lu x %lu x %lu blocks",
+                                      BLOCKS_SIZE_X, BLOCKS_SIZE_Y, BLOCKS_SIZE_Z));
+
         panelCityGen.Text(ToString("block size:"));
-        if (panelCityGen.SliderFloat(&sliderBlockSize, 1.0f, 4.0f)) {
-            appState->blockSize = sliderBlockSize.value;
+        if (panelCityGen.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
+            appState->blockSize = appState->sliderBlockSize.value;
         }
 
         panelCityGen.Text(ToString("street size:"));
-        panelCityGen.InputInt(&inputStreetSize, inputTextColor);
+        panelCityGen.InputInt(&appState->inputStreetSize, inputTextColor);
 
         panelCityGen.Text(ToString("sidewalk size:"));
-        panelCityGen.InputInt(&inputSidewalkSize, inputTextColor);
+        panelCityGen.InputInt(&appState->inputSidewalkSize, inputTextColor);
 
         panelCityGen.Text(ToString("building size:"));
-        panelCityGen.InputInt(&inputBuildingSize, inputTextColor);
+        panelCityGen.InputInt(&appState->inputBuildingSize, inputTextColor);
 
         panelCityGen.Text(ToString("building height:"));
-        panelCityGen.InputInt(&inputBuildingHeight, inputTextColor);
+        panelCityGen.InputInt(&appState->inputBuildingHeight, inputTextColor);
 
         if (panelCityGen.Button(ToString("Generate"))) {
-            if (inputStreetSize.valid && inputSidewalkSize.valid
-                && inputBuildingSize.valid && inputBuildingHeight.valid) {
+            if (appState->inputStreetSize.valid && appState->inputSidewalkSize.valid
+                && appState->inputBuildingSize.valid && appState->inputBuildingHeight.valid) {
                 LOG_INFO("Re-generating city blocks...\n");
-                GenerateCityBlocks(inputStreetSize.value, inputSidewalkSize.value,
-                                   inputBuildingSize.value, inputBuildingHeight.value, &allocator, &appState->blockGrid);
+                GenerateCityBlocks(appState->inputStreetSize.value, appState->inputSidewalkSize.value,
+                                   appState->inputBuildingSize.value, appState->inputBuildingHeight.value,
+                                   &allocator, &appState->blockGrid);
             }
         }
 
-        panelCityGen.Draw(Vec2Int::zero, Vec4::one, backgroundColor, screenSize,
+        panelCityGen.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
                           &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
     }
 

@@ -2,6 +2,7 @@
 
 #include <km_common/km_array.h>
 #include <km_common/km_string.h>
+#include <km_common/app/km_input.h>
 
 enum class PanelRenderCommandType
 {
@@ -68,8 +69,7 @@ struct PanelInputIntState
     int value;
     PanelInputTextState textState;
 
-    PanelInputIntState();
-    PanelInputIntState(int value);
+    void Initialize(int value);
 };
 
 struct Panel
@@ -77,7 +77,7 @@ struct Panel
     PanelFlags flags;
 	Vec2Int position;
 	Vec2Int positionCurrent;
-	Vec2 anchor;
+    float32 anchorX;
 	Vec2Int size;
 	DynamicArray<PanelRenderCommand, LinearAllocator> renderCommands;
     LinearAllocator* allocator;
@@ -86,7 +86,8 @@ struct Panel
 
     Panel(LinearAllocator* allocator);
 
-    void Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags, Vec2Int position, Vec2 anchor);
+    void Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags,
+               Vec2Int position, float32 anchorX);
 
     void TitleBar(const_string text, bool* minimized = nullptr, Vec4 color = Vec4::zero,
                   const VulkanFontFace* fontFace = nullptr);

@@ -6,12 +6,7 @@ const float32 BACKGROUND_DEPTH = 0.1f;
 const float32 PANEL_ITEM_DEPTH = 0.05f;
 const float32 PANEL_TEXT_DEPTH = 0.0f;
 
-PanelInputIntState::PanelInputIntState()
-: PanelInputIntState(0)
-{
-}
-
-PanelInputIntState::PanelInputIntState(int value)
+void PanelInputIntState::Initialize(int value)
 {
     string text = { .size = textState.MAX_LENGTH, .data = textState.text.data };
     valid = SizedPrintf(&text, "%d", value);
@@ -27,14 +22,15 @@ Panel::Panel(LinearAllocator* allocator)
 }
 
 // TODO assert that this is called before anything else?
-void Panel::Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags, Vec2Int position, Vec2 anchor)
+void Panel::Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags,
+                  Vec2Int position, float32 anchorX)
 {
     DEBUG_ASSERT(fontFace != nullptr);
 
     this->flags = flags;
     this->position = position;
     this->positionCurrent = position;
-    this->anchor = anchor;
+    this->anchorX = anchorX;
     this->size = Vec2Int::zero;
     this->input = &input;
     this->fontFaceDefault = fontFace;
@@ -77,7 +73,7 @@ void Panel::Text(const_string text, Vec4 color, const VulkanFontFace* fontFace)
         newCommand->position.y += sizeY;
     }
     newCommand->color = color;
-    newCommand->anchor = { anchor.x, 0.0f };
+    newCommand->anchor = { anchorX, 0.0f };
     newCommand->commandText.text = ToNonConstString(text);
     newCommand->commandText.fontFace = fontToUse;
 
@@ -105,8 +101,8 @@ bool Panel::Button(const_string text, Vec4 color, const VulkanFontFace* fontFace
     Vec2Int textSize = { (int)GetTextWidth(*fontToUse, text), (int)fontToUse->height };
     Vec2Int boxSize = { (int)(textSize.x * MARGIN_FRACTION), (int)(textSize.y * MARGIN_FRACTION) };
     const Vec2Int boxOffset = Vec2Int {
-        Lerp(boxSize.x / 2, -boxSize.x / 2, anchor.x),
-        Lerp(boxSize.y / 2, -boxSize.y / 2, anchor.y)
+        Lerp(boxSize.x / 2, -boxSize.x / 2, anchorX),
+        flags & PanelFlag::GROW_DOWNWARDS ? boxSize.y / 2 : -boxSize.y / 2
     };
     const Vec2Int boxCenter = positionCurrent + boxOffset;
     const RectInt boxRect = {
@@ -138,7 +134,7 @@ bool Panel::Button(const_string text, Vec4 color, const VulkanFontFace* fontFace
     if (flags & PanelFlag::GROW_DOWNWARDS) {
         newCommand->position.y += boxSize.y;
     }
-    newCommand->anchor = anchor;
+    newCommand->anchor = Vec2 { anchorX, 0.0f };
     newCommand->color = color;
     newCommand->commandText.text = ToNonConstString(text);
     newCommand->commandText.fontFace = fontToUse;
@@ -172,8 +168,8 @@ bool Panel::Checkbox(bool* value, const_string text, Vec4 color, const VulkanFon
     const VulkanFontFace* fontToUse = fontFace == nullptr ? fontFaceDefault : fontFace;
     const int fontHeight = fontToUse->height;
     const Vec2Int boxOffset = Vec2Int {
-        Lerp(fontHeight / 2, -fontHeight / 2, anchor.x),
-        Lerp(fontHeight / 2, -fontHeight / 2, anchor.y)
+        Lerp(fontHeight / 2, -fontHeight / 2, anchorX),
+        flags & PanelFlag::GROW_DOWNWARDS ? fontHeight / 2 : -fontHeight / 2
     };
     const Vec2Int boxCenter = positionCurrent + boxOffset;
     const int boxSize = (int)(fontHeight / MARGIN_FRACTION);
@@ -206,11 +202,11 @@ bool Panel::Checkbox(bool* value, const_string text, Vec4 color, const VulkanFon
     newCommand = renderCommands.Append();
     newCommand->type = PanelRenderCommandType::TEXT;
     newCommand->flags = color == Vec4::zero ? 0 : PanelRenderCommandFlag::OVERRIDE_COLOR;
-    newCommand->position = positionCurrent + Vec2Int { Lerp(fontHeight, -fontHeight, anchor.x), 0 };
+    newCommand->position = positionCurrent + Vec2Int { Lerp(fontHeight, -fontHeight, anchorX), 0 };
     if (flags & PanelFlag::GROW_DOWNWARDS) {
         newCommand->position.y += boxSize2.y;
     }
-    newCommand->anchor = anchor;
+    newCommand->anchor = Vec2 { anchorX, 0.0f };
     newCommand->color = color;
     newCommand->commandText.text = ToNonConstString(text);
     newCommand->commandText.fontFace = fontToUse;
@@ -357,9 +353,9 @@ bool Panel::InputText(PanelInputTextState* state, Vec4 color, const VulkanFontFa
         }
     }
 
-    const float32 PRESSED_ALPHA = 0.5f;
-    const float32 HOVERED_ALPHA = 0.2f;
-    const float32 IDLE_ALPHA = 0.0f;
+    const float32 PRESSED_ALPHA = 0.4f;
+    const float32 HOVERED_ALPHA = 0.3f;
+    const float32 IDLE_ALPHA = 0.1f;
     const int BOX_MIN_WIDTH = 20;
 
     const VulkanFontFace* fontToUse = fontFace == nullptr ? fontFaceDefault : fontFace;
@@ -369,8 +365,8 @@ bool Panel::InputText(PanelInputTextState* state, Vec4 color, const VulkanFontFa
         boxSize.x = BOX_MIN_WIDTH;
     }
     const Vec2Int boxOffset = Vec2Int {
-        Lerp(boxSize.x / 2, -boxSize.x / 2, anchor.x),
-        Lerp(boxSize.y / 2, -boxSize.y / 2, anchor.y)
+        Lerp(boxSize.x / 2, -boxSize.x / 2, anchorX),
+        flags & PanelFlag::GROW_DOWNWARDS ? boxSize.y / 2 : -boxSize.y / 2
     };
     const Vec2Int boxCenter = positionCurrent + boxOffset;
     const RectInt boxRect = {
@@ -404,7 +400,7 @@ bool Panel::InputText(PanelInputTextState* state, Vec4 color, const VulkanFontFa
     if (flags & PanelFlag::GROW_DOWNWARDS) {
         newCommand->position.y += boxSize.y;
     }
-    newCommand->anchor = anchor;
+    newCommand->anchor = Vec2 { anchorX, 0.0f };
     newCommand->color = color;
     newCommand->commandText.text = state->text.ToArray();
     newCommand->commandText.fontFace = fontToUse;
@@ -428,7 +424,16 @@ bool Panel::InputInt(PanelInputIntState* state, Vec4 color, const VulkanFontFace
     bool inputChanged = false;
     if (InputText(&state->textState, color, fontFace)) {
         state->valid = StringToIntBase10(state->textState.text.ToArray(), &state->value);
-        if (state->valid) inputChanged = true;
+        if (state->valid) {
+            inputChanged = true;
+        }
+    }
+
+    if (!state->valid) {
+        // TODO a little dangerous / weird?
+        renderCommands[renderCommands.size - 2].color.r = 1.0f;
+        renderCommands[renderCommands.size - 2].color.g = 0.0f;
+        renderCommands[renderCommands.size - 2].color.b = 0.0f;
     }
 
     return inputChanged;
@@ -440,12 +445,13 @@ void Panel::Draw(Vec2Int borderSize, Vec4 defaultColor, Vec4 backgroundColor, Ve
 {
     // Draw background
     const Vec2Int backgroundOffset = {
-        Lerp(-borderSize.x, borderSize.x, anchor.x),
-        Lerp(-borderSize.y, borderSize.y, anchor.y)
+        Lerp(-borderSize.x, borderSize.x, anchorX),
+        flags & PanelFlag::GROW_DOWNWARDS ? -borderSize.y : borderSize.y
     };
     const Vec2Int backgroundSize = size + borderSize * 2;
-    PushSprite((uint32)SpriteId::PIXEL, position + backgroundOffset, backgroundSize, BACKGROUND_DEPTH, backgroundColor,
-               screenSize, spriteRenderState);
+    const Vec2 backgroundAnchor = { anchorX, flags & PanelFlag::GROW_DOWNWARDS ? 0.0f : 1.0f };
+    PushSprite((uint32)SpriteId::PIXEL, position + backgroundOffset, backgroundSize, BACKGROUND_DEPTH,
+               backgroundAnchor, backgroundColor, screenSize, spriteRenderState);
 
     for (uint32 i = 0; i < renderCommands.size; i++) {
         const PanelRenderCommand& command = renderCommands[i];

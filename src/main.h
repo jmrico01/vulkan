@@ -12,6 +12,7 @@
 #include <km_common/vulkan/km_vulkan_sprite.h>
 #include <km_common/vulkan/km_vulkan_text.h>
 
+#include "imgui.h"
 #include "mesh.h"
 
 const uint32 BLOCKS_SIZE_X = 64;
@@ -79,8 +80,18 @@ struct AppState
     Vec3 cameraPos;
     Vec2 cameraAngles;
 
-    Vec3 noclipPos;
+    // Debug
+    bool debugView;
+
     bool noclip;
+    Vec3 noclipPos;
+
+    bool cityGenMinimized;
+    PanelInputIntState inputStreetSize;
+    PanelInputIntState inputSidewalkSize;
+    PanelInputIntState inputBuildingSize;
+    PanelInputIntState inputBuildingHeight;
+    PanelSliderState sliderBlockSize;
 };
 
 struct FrameState
