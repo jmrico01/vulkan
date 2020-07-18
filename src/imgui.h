@@ -3,9 +3,6 @@
 #include <km_common/km_array.h>
 #include <km_common/km_string.h>
 
-const uint64 INPUT_BUFFER_MAX = 256;
-using InputString = FixedArray<char, INPUT_BUFFER_MAX>;
-
 enum class PanelRenderCommandType
 {
 	RECT,
@@ -28,7 +25,6 @@ struct PanelRenderCommandText
 {
     string text; // NOTE we don't own this data
 	const VulkanFontFace* fontFace;
-    uint32 fontIndex;
 };
 
 struct PanelRenderCommand
@@ -53,6 +49,29 @@ constexpr PanelFlags GROW_DOWNWARDS = 1 << 0;
 constexpr PanelFlags MINIMIZED      = 1 << 1;
 }
 
+struct PanelSliderState
+{
+    float32 value;
+    bool drag;
+};
+
+struct PanelInputTextState
+{
+    static const uint32 MAX_LENGTH = 256;
+    bool focused;
+    FixedArray<char, MAX_LENGTH> text;
+};
+
+struct PanelInputIntState
+{
+    bool valid;
+    int value;
+    PanelInputTextState textState;
+
+    PanelInputIntState();
+    PanelInputIntState(int value);
+};
+
 struct Panel
 {
     PanelFlags flags;
@@ -61,6 +80,7 @@ struct Panel
 	Vec2 anchor;
 	Vec2Int size;
 	DynamicArray<PanelRenderCommand, LinearAllocator> renderCommands;
+    LinearAllocator* allocator;
 	const AppInput* input;
     const VulkanFontFace* fontFaceDefault;
 
@@ -76,11 +96,11 @@ struct Panel
 	bool Button(const_string text, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
 	bool Checkbox(bool* value, const_string text, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
 
-    bool InputText(InputString* inputString, bool* focused, Vec4 color = Vec4::zero,
-                   const VulkanFontFace* fontFace = nullptr);
+	bool SliderFloat(PanelSliderState* state, float32 min, float32 max, const_string text = const_string::empty,
+                     Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
 
-	bool SliderFloat(float32* value, float32 min, float32 max, Vec4 color = Vec4::zero,
-                     const VulkanFontFace* font = nullptr);
+    bool InputText(PanelInputTextState* state, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
+    bool InputInt(PanelInputIntState* state, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
 
     template <uint32 S1, uint32 S2>
         void Draw(Vec2Int borderSize, Vec4 defaultColor, Vec4 backgroundColor, Vec2Int screenSize,
@@ -89,7 +109,6 @@ struct Panel
     // Unimplemented ...
     int SliderInt();
 	float32 InputFloat();
-	int InputInt();
 	Vec2 InputVec2();
 	Vec3 InputVec3();
 	Vec4 InputVec4();

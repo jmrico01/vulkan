@@ -14,7 +14,6 @@
 
 #include "mesh.h"
 
-const float32 BLOCK_SIZE = 2.0f;
 const uint32 BLOCKS_SIZE_X = 64;
 const uint32 BLOCKS_SIZE_Y = 64;
 const uint32 BLOCKS_SIZE_Z = 16;
@@ -75,6 +74,7 @@ struct AppState
     VulkanFontFace fontFaces[FontId::COUNT];
 
     BlockGrid blockGrid;
+    float32 blockSize;
 
     Vec3 cameraPos;
     Vec2 cameraAngles;
