@@ -118,14 +118,6 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
     }
 }
 
-void DrawSlab(uint32 x, uint32 y, uint32 z, uint32 sizeX, uint32 sizeY, uint32 sizeZ, float32 blockSize)
-{
-    DEFINE_BLOCK_ROTATION_MATRICES;
-
-    const Mat4 scale = Scale(Vec3 { (float32)sizeX, (float32)sizeY, (float32)sizeZ } * blockSize);
-
-}
-
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
