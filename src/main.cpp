@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> collision
 > basic enemy, just standing around
 > crosshair, ability to raycast-hit enemy
 > post-process pipeline for grain
@@ -51,6 +50,8 @@ const uint32 DEFAULT_SIDEWALK_SIZE = 2;
 const uint32 DEFAULT_BUILDING_SIZE = 10;
 const uint32 DEFAULT_BUILDING_HEIGHT = 3;
 
+const float32 BLOCK_COLLISION_MARGIN = 0.2f;
+
 internal AppState* GetAppState(AppMemory* memory)
 {
     DEBUG_ASSERT(sizeof(AppState) < memory->permanent.size);
@@ -66,6 +67,37 @@ internal TransientState* GetTransientState(AppMemory* memory)
         .data = memory->transient.data + sizeof(TransientState),
     };
     return transientState;
+}
+
+Vec3Int WorldPosToBlockIndex(Vec3 worldPos, float32 blockSize, Vec3Int blocksSize, Vec3Int blockOrigin)
+{
+    const int x = (int)(FloorFloat32(worldPos.x / blockSize)) + blockOrigin.x;
+    const int y = (int)(FloorFloat32(worldPos.y / blockSize)) + blockOrigin.y;
+    const int z = (int)(FloorFloat32(worldPos.z / blockSize)) + blockOrigin.z;
+    if (0 <= x && x < blocksSize.x && 0 <= y && y < blocksSize.y && 0 <= z && z < blocksSize.z) {
+        return Vec3Int { x, y, z };
+    }
+
+    return Vec3Int { -1, -1, -1 };
+}
+
+Vec3 BlockIndexToWorldPos(Vec3Int blockIndex, float32 blockSize, Vec3Int blockOrigin)
+{
+    return Vec3 {
+        (float32)(blockIndex.x - blockOrigin.x) * blockSize,
+        (float32)(blockIndex.y - blockOrigin.y) * blockSize,
+        (float32)(blockIndex.z - blockOrigin.z) * blockSize,
+    };
+}
+
+bool IsWalkable(const BlockGrid& blockGrid, Vec3Int blockIndex)
+{
+    if (blockIndex.x < 0 || blockIndex.y < 0 || blockIndex.z < 0) {
+        return false;
+    }
+
+    const Block& block = blockGrid[blockIndex.z][blockIndex.y][blockIndex.x];
+    return block.id == BlockId::NONE;
 }
 
 void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingSize, uint32 buildingHeight,
@@ -89,7 +121,7 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
         buildingMask[i] = i >= (streetSize + sidewalkSize) && i < (streetSize + sidewalkSize + buildingSize);
     }
 
-    static_assert(BLOCK_ORIGIN_Z > 0);
+    static_assert(BLOCK_ORIGIN.z > 0);
     for (uint32 z = 0; z < blockGrid->SIZE; z++) {
         for (uint32 y = 0; y < (*blockGrid)[z].SIZE; y++) {
             for (uint32 x = 0; x < (*blockGrid)[z][y].SIZE; x++) {
@@ -97,7 +129,7 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
                 const uint32 cityBlockY = y % cityBlockSize;
 
                 const uint8 building = buildingMask[cityBlockX] * buildingMask[cityBlockY];
-                if (z == BLOCK_ORIGIN_Z - 1) {
+                if ((int)z == BLOCK_ORIGIN.z - 1) {
                     const uint8 street = streetMask[cityBlockX] + streetMask[cityBlockY];
                     const uint8 sidewalk = sidewalkMask[cityBlockX] + sidewalkMask[cityBlockY];
                     if (street) {
@@ -110,7 +142,7 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
                         (*blockGrid)[z][y][x].id = BlockId::BUILDING;
                     }
                 }
-                else if (building && z - BLOCK_ORIGIN_Z < buildingHeight) {
+                else if (building && z - BLOCK_ORIGIN.z < buildingHeight) {
                     (*blockGrid)[z][y][x].id = BlockId::BUILDING;
                 }
             }
@@ -277,9 +309,41 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             appState->noclipPos += velocity;
         }
         else {
-            appState->cameraPos += velocity;
+            const Vec3 prevPos = appState->noclip ? appState->noclipPos : appState->cameraPos;
+            const Vec3Int prevBlockIndex = WorldPosToBlockIndex(prevPos, appState->blockSize, BLOCKS_SIZE, BLOCK_ORIGIN);
+
+            Rect range = {
+                .min = Vec2 { -1e8, -1e8 },
+                .max = Vec2 {  1e8,  1e8 },
+            };
+            if (prevBlockIndex.x >= 0 && prevBlockIndex.y >= 0) {
+                const Vec3 blockOrigin = BlockIndexToWorldPos(prevBlockIndex, appState->blockSize, BLOCK_ORIGIN);
+                if (!IsWalkable(appState->blockGrid, prevBlockIndex - Vec3Int::unitX)) {
+                    range.min.x = blockOrigin.x + BLOCK_COLLISION_MARGIN;
+                }
+                if (!IsWalkable(appState->blockGrid, prevBlockIndex + Vec3Int::unitX)) {
+                    range.max.x = blockOrigin.x + appState->blockSize - BLOCK_COLLISION_MARGIN;
+                }
+                if (!IsWalkable(appState->blockGrid, prevBlockIndex - Vec3Int::unitY)) {
+                    range.min.y = blockOrigin.y + BLOCK_COLLISION_MARGIN;
+                }
+                if (!IsWalkable(appState->blockGrid, prevBlockIndex + Vec3Int::unitY)) {
+                    range.max.y = blockOrigin.y + appState->blockSize - BLOCK_COLLISION_MARGIN;
+                }
+            }
+
+            Vec3 newPos = appState->cameraPos + velocity;
+            const Vec2 prevPos2 = { prevPos.x, prevPos.y };
+            if (IsWalkable(appState->blockGrid, prevBlockIndex)) {
+                newPos.x = ClampFloat32(newPos.x, range.min.x, range.max.x);
+                newPos.y = ClampFloat32(newPos.y, range.min.y, range.max.y);
+            }
+            appState->cameraPos = newPos;
         }
     }
+
+    const Vec3 currentPos = appState->noclip ? appState->noclipPos : appState->cameraPos;
+    const Vec3Int blockIndex = WorldPosToBlockIndex(currentPos, appState->blockSize, BLOCKS_SIZE, BLOCK_ORIGIN);
 
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
     const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
@@ -289,13 +353,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         * QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX);
     const Mat4 baseCameraRotMat4 = UnitQuatToMat4(baseCameraRot);
 
-    Mat4 view;
-    if (appState->noclip) {
-        view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->noclipPos);
-    }
-    else {
-        view = baseCameraRotMat4 * cameraRotMat4 * Translate(-appState->cameraPos);
-    }
+    const Mat4 view = baseCameraRotMat4 * cameraRotMat4 * Translate(-currentPos);
 
     const float32 aspect = (float32)screenSize.x / (float32)screenSize.y;
     const float32 nearZ = 0.1f;
@@ -312,10 +370,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         if (appState->blockEditor) {
             if (KeyPressed(input, KM_KEY_ARROW_UP)) {
-                appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE_Z);
+                appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE.z);
             }
             if (KeyPressed(input, KM_KEY_ARROW_DOWN)) {
-                appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE_Z);
+                appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE.z);
             }
 
             // NOTE easy way out - just raycast from cam pos + forward dir
@@ -327,18 +385,18 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             const Vec3 planeOrigin = Vec3 {
                 0.0f,
                 0.0f,
-                (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
+                (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN.z + 1) * appState->blockSize
             };
             const Vec3 planeNormal = Vec3::unitZ;
             float32 t;
             if (RayPlaneIntersection(rayOrigin, rayDir, planeOrigin, planeNormal, &t) && t >= 0.0f) {
                 // TODO I think this position is a bit off
                 const Vec3 intersect = rayOrigin + t * rayDir;
-                const int x = (int)(intersect.x / appState->blockSize) + BLOCK_ORIGIN_X;
-                const int y = (int)(intersect.y / appState->blockSize) + BLOCK_ORIGIN_Y;
-                if (0 <= x && x < BLOCKS_SIZE_X && 0 <= y && y < BLOCKS_SIZE_Y) {
-                    hoveredX = x;
-                    hoveredY = y;
+                const Vec3Int intersectBlockIndex = WorldPosToBlockIndex(intersect, appState->blockSize,
+                                                                         BLOCKS_SIZE, BLOCK_ORIGIN);
+                if (blockIndex.x != -1) {
+                    hoveredX = intersectBlockIndex.x;
+                    hoveredY = intersectBlockIndex.y;
                 }
             }
         }
@@ -422,16 +480,20 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelDebugInfo.Text(frameTiming);
         panelDebugInfo.Text(string::empty);
 
-        const_string cameraPos = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
-                                             appState->cameraPos.x, appState->cameraPos.y, appState->cameraPos.z);
-        const_string noclipPos = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
-                                             appState->noclipPos.x, appState->noclipPos.y, appState->noclipPos.z);
+        const_string cameraPosString = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
+                                                   appState->cameraPos.x, appState->cameraPos.y, appState->cameraPos.z);
+        const_string noclipPosString = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
+                                                   appState->noclipPos.x, appState->noclipPos.y, appState->noclipPos.z);
         if (appState->noclip) {
-            panelDebugInfo.Text(noclipPos);
+            panelDebugInfo.Text(noclipPosString);
         }
         else {
-            panelDebugInfo.Text(cameraPos);
+            panelDebugInfo.Text(cameraPosString);
         }
+
+        const_string blockIndexString = AllocPrintf(&allocator, "%d, %d, %d",
+                                                    blockIndex.x, blockIndex.y, blockIndex.z);
+        panelDebugInfo.Text(blockIndexString);
 
         panelDebugInfo.Text(string::empty);
 
@@ -455,8 +517,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelCityGen.Text(ToString("press \"Generate\""));
         panelCityGen.Text(string::empty);
 
-        panelCityGen.Text(AllocPrintf(&allocator, "%lu x %lu x %lu blocks",
-                                      BLOCKS_SIZE_X, BLOCKS_SIZE_Y, BLOCKS_SIZE_Z));
+        panelCityGen.Text(AllocPrintf(&allocator, "%d x %d x %d blocks",
+                                      BLOCKS_SIZE.x, BLOCKS_SIZE.y, BLOCKS_SIZE.z));
 
         panelCityGen.Text(ToString("block size:"));
         if (panelCityGen.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
@@ -530,9 +592,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
                     const Block block = appState->blockGrid[z][y][x];
 
-                    bool drawTop    = z == BLOCKS_SIZE_Z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE;
-                    bool drawLeft   = y == BLOCKS_SIZE_Y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE;
-                    bool drawFront  = x == BLOCKS_SIZE_X - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE;
+                    bool drawTop    = (int)z == BLOCKS_SIZE.z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE;
+                    bool drawLeft   = (int)y == BLOCKS_SIZE.y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE;
+                    bool drawFront  = (int)x == BLOCKS_SIZE.x - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE;
                     bool drawBottom = z == 0 || appState->blockGrid[z - 1][y][x].id == BlockId::NONE;
                     bool drawRight  = y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE;
                     bool drawBack   = x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE;
@@ -593,11 +655,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                         }
                     }
 
-                    const Vec3 pos = {
-                        (float32)((int)x - (int)BLOCK_ORIGIN_X) * appState->blockSize,
-                        (float32)((int)y - (int)BLOCK_ORIGIN_Y) * appState->blockSize,
-                        (float32)((int)z - (int)BLOCK_ORIGIN_Z) * appState->blockSize,
-                    };
+                    const Vec3 pos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z },
+                                                          appState->blockSize, BLOCK_ORIGIN);
                     const Mat4 posTransform = Translate(pos);
                     if (drawTop) {
                         PushMesh(MeshId::TILE, posTransform * scale * top, color,

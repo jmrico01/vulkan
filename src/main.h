@@ -15,13 +15,8 @@
 #include "imgui.h"
 #include "mesh.h"
 
-const uint32 BLOCKS_SIZE_X = 64;
-const uint32 BLOCKS_SIZE_Y = 64;
-const uint32 BLOCKS_SIZE_Z = 16;
-
-const uint32 BLOCK_ORIGIN_X = BLOCKS_SIZE_X / 2;
-const uint32 BLOCK_ORIGIN_Y = BLOCKS_SIZE_Y / 2;
-const uint32 BLOCK_ORIGIN_Z = 1;
+constexpr Vec3Int BLOCKS_SIZE = { 64, 64, 16 };
+constexpr Vec3Int BLOCK_ORIGIN = { BLOCKS_SIZE.x / 2, BLOCKS_SIZE.y / 2, 1 };
 
 enum class BlockId
 {
@@ -38,7 +33,7 @@ struct Block
     BlockId id;
 };
 
-using BlockGrid = StaticArray<StaticArray<StaticArray<Block, BLOCKS_SIZE_X>, BLOCKS_SIZE_Y>, BLOCKS_SIZE_Z>;
+using BlockGrid = StaticArray<StaticArray<StaticArray<Block, BLOCKS_SIZE.x>, BLOCKS_SIZE.y>, BLOCKS_SIZE.z>;
 
 enum class SpriteId
 {
