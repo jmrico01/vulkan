@@ -1,10 +1,6 @@
 #pragma once
 
-#include <stdio.h>
-
-#define LOG_ERROR(format, ...) fprintf(stderr, format, ##__VA_ARGS__)
-#define LOG_INFO(format, ...)  fprintf(stderr, format, ##__VA_ARGS__)
-#define LOG_FLUSH() fflush(stderr); fflush(stdout)
+#include <km_common/app/km_log.h>
 
 #include <km_common/km_array.h>
 #include <km_common/km_debug.h>

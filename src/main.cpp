@@ -30,6 +30,7 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
+> logging to file
 > crosshair, ability to raycast-hit enemy
 > enemy deform + death anim
 > post-process pipeline for grain
@@ -174,7 +175,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         }
         appState->blockSize = DEFAULT_BLOCK_SIZE;
 
-        const Vec3 startPos = Vec3 { 0.0f, 0.0f, CAMERA_HEIGHT };
+        const Vec3 startPos = Vec3 { 0.5f, 0.5f, CAMERA_HEIGHT };
 
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
@@ -1042,6 +1043,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
 
 #include <km_common/app/km_app.cpp>
 #include <km_common/app/km_input.cpp>
+#include <km_common/app/km_log.cpp>
 
 #include <km_common/vulkan/km_vulkan_core.cpp>
 #include <km_common/vulkan/km_vulkan_sprite.cpp>
