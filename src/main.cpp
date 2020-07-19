@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> logging to file
 > crosshair, ability to raycast-hit enemy
 > enemy deform + death anim
 > post-process pipeline for grain
