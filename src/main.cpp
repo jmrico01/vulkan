@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> enemy deform + death anim
 > post-process pipeline for grain
 
 */
@@ -149,6 +148,35 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
     }
 }
 
+void SpawnMobs(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigin, float32 spawnFreq,
+               FixedArray<Mob, AppState::MAX_MOBS>* mobs)
+{
+    const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
+
+    mobs->Clear();
+    for (uint32 z = 0; z < blockGrid.SIZE; z++) {
+        for (uint32 y = 0; y < blockGrid[z].SIZE; y++) {
+            for (uint32 x = 0; x < blockGrid[z][y].SIZE; x++) {
+                const Block& block = blockGrid[z][y][x];
+                if (mobs->size < mobs->MAX_SIZE && (int)z == blockOrigin.z
+                    && block.id == BlockId::NONE && RandFloat32() < spawnFreq) {
+                    const Vec3 blockPos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z }, blockSize, blockOrigin);
+
+                    Mob* mob = mobs->Append();
+                    mob->pos = blockPos + Vec3 { blockSize / 2.0f, blockSize / 2.0f, 2.6f } ;
+                    mob->yaw = PI_F / 2.0f;
+                    mob->hitbox = {
+                        .min = mob->pos - hitboxRadius,
+                        .max = mob->pos + hitboxRadius
+                    };
+                    mob->collapseT = 0.0f;
+                    mob->collapsed = false;
+                }
+            }
+        }
+    }
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
@@ -178,17 +206,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        appState->mobs.Clear();
-        Mob* mob;
+        SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, 0.01f, &appState->mobs);
 
-        const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
-        mob = appState->mobs.Append();
-        mob->pos = Vec3 { 10.0f, 10.0f, 2.6f };
-        mob->yaw = PI_F / 2.0f;
-        mob->hitbox = {
-            .min = mob->pos - hitboxRadius,
-            .max = mob->pos + hitboxRadius
-        };
+        appState->collapsingMobIndex = appState->mobs.size;
 
         // Debug views 
         appState->debugView = false;
@@ -362,20 +382,56 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Quat inverseCameraRot = Inverse(cameraRot);
     const Vec3 cameraForward = inverseCameraRot * Vec3::unitX;
 
-    uint32 hitMob = appState->mobs.size;
-    float32 hitMobMinDist = 1e8;
+    uint32 hoverMobIndex = appState->mobs.size;
+    float32 hoverMobMinDist = 1e8;
     for (uint32 i = 0; i < appState->mobs.size; i++) {
         const Mob& mob = appState->mobs[i];
+        if (mob.collapsed) continue;
 
         const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
         const Vec3 inverseRayDir = Reciprocal(cameraForward);
+        // const float32 hitboxCollapsedScale = MinFloat32(1.0f, 1.2f - mob.collapseT);
+        const float32 hitboxCollapsedScale = 1.0f;
+        const Box hitboxCollapsed = {
+            .min = mob.hitbox.min * hitboxCollapsedScale,
+            .max = mob.hitbox.max * hitboxCollapsedScale
+        };
         float32 t;
-        if (RayAxisAlignedBoxIntersection(rayOrigin, inverseRayDir, mob.hitbox, &t)) {
-            if (t < hitMobMinDist) {
-                hitMob = i;
-                hitMobMinDist = t;
+        if (RayAxisAlignedBoxIntersection(rayOrigin, inverseRayDir, hitboxCollapsed, &t)) {
+            if (t < hoverMobMinDist) {
+                hoverMobIndex = i;
+                hoverMobMinDist = t;
             }
         }
+    }
+
+    if (appState->collapsingMobIndex != appState->mobs.size) {
+        if (appState->collapsingMobIndex != hoverMobIndex || !MouseDown(input, KM_MOUSE_LEFT)) {
+            appState->collapsingMobIndex = appState->mobs.size;
+        }
+    }
+    else if (hoverMobIndex != appState->mobs.size && MousePressed(input, KM_MOUSE_LEFT)) {
+        appState->collapsingMobIndex = hoverMobIndex;
+    }
+
+    const float32 totalCollapseTime = 2.0f;
+    const float32 totalUncollapseTime = 0.6f;
+
+    for (uint32 i = 0; i < appState->mobs.size; i++) {
+        Mob& mob = appState->mobs[i];
+
+        if (i == appState->collapsingMobIndex) {
+            mob.collapseT += deltaTime / totalCollapseTime;
+            if (mob.collapseT >= 1.0f) {
+                mob.collapsed = true;
+                appState->collapsingMobIndex = appState->mobs.size;
+            }
+        }
+        else if (mob.collapseT < 1.0f) {
+            mob.collapseT -= deltaTime / totalUncollapseTime;
+        }
+
+        mob.collapseT = MaxFloat32(mob.collapseT, 0.0f);
     }
 
     // Transforms world-view camera (+X forward, +Z up) to Vulkan camera (+Z forward, -Y up)
@@ -612,8 +668,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     {
         for (uint32 i = 0; i < appState->mobs.size; i++) {
             const Mob& mob = appState->mobs[i];
+            if (mob.collapsed) continue;
+
             const Mat4 model = Translate(mob.pos) * Rotate(Vec3 { 0.0f, 0.0f, mob.yaw });
-            PushMesh(MeshId::MOB, model, Vec3::one * 0.6f, &transientState->frameState.meshRenderState);
+            PushMesh(MeshId::MOB, model, Vec3::one * 0.6f, Vec3::zero, mob.collapseT,
+                     &transientState->frameState.meshRenderState);
         }
     }
 
@@ -695,27 +754,27 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                                                           appState->blockSize, BLOCK_ORIGIN);
                     const Mat4 posTransform = Translate(pos);
                     if (drawTop) {
-                        PushMesh(MeshId::TILE, posTransform * scale * top, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * top, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                     if (drawBottom) {
-                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                     if (drawLeft) {
-                        PushMesh(MeshId::TILE, posTransform * scale * left, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * left, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                     if (drawRight) {
-                        PushMesh(MeshId::TILE, posTransform * scale * right, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * right, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                     if (drawFront) {
-                        PushMesh(MeshId::TILE, posTransform * scale * front, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * front, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                     if (drawBack) {
-                        PushMesh(MeshId::TILE, posTransform * scale * back, color,
+                        PushMesh(MeshId::TILE, posTransform * scale * back, color, Vec3::zero, 0.0f,
                                  &transientState->frameState.meshRenderState);
                     }
                 }
@@ -733,8 +792,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         };
         const Vec2Int crosshairSize = { crosshairPixels, crosshairPixels };
         Vec4 crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 0.2f };
-        if (hitMob != appState->mobs.size) {
-            crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 1.0f };
+        if (appState->collapsingMobIndex != appState->mobs.size) {
+            crosshairColor = Vec4 { 1.0f, 0.5f, 0.5f, 1.0f };
+        }
+        else if (hoverMobIndex != appState->mobs.size) {
+            crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 0.8f };
         }
 
         PushSprite((uint32)SpriteId::PIXEL, crosshairPos, crosshairSize, 0.0f, crosshairColor, screenSize,

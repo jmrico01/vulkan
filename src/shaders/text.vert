@@ -13,7 +13,8 @@ layout(location = 5) in vec4 inColor;
 layout(location = 0) out vec2 outUv;
 layout(location = 1) out vec4 outColor;
 
-void main() {
+void main()
+{
     outUv = inUv * inUvInfo.zw + inUvInfo.xy;
     outColor = inColor;
 

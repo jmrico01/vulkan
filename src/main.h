@@ -66,11 +66,13 @@ struct Mob
     Vec3 pos;
     float32 yaw;
     Box hitbox;
+    float32 collapseT;
+    bool collapsed;
 };
 
 struct AppState
 {
-    static const uint32 MAX_MOBS = 16;
+    static const uint32 MAX_MOBS = 256;
 
     VulkanAppState vulkanAppState;
     VulkanFontFace fontFaces[FontId::COUNT];
@@ -84,6 +86,7 @@ struct AppState
     Vec2 cameraAngles;
 
     FixedArray<Mob, MAX_MOBS> mobs;
+    uint32 collapsingMobIndex;
 
     // Debug
     bool debugView;

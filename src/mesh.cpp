@@ -174,7 +174,8 @@ internal VulkanLightmapMeshGeometry ObjToVulkanLightmapMeshGeometry(const LoadOb
     return geometry;
 }
 
-void PushMesh(MeshId meshId, Mat4 model, Vec3 color, VulkanMeshRenderState* renderState)
+void PushMesh(MeshId meshId, Mat4 model, Vec3 color, Vec3 collapseMid, float32 collapseT,
+              VulkanMeshRenderState* renderState)
 {
     const uint32 meshIndex = (uint32)meshId;
     DEBUG_ASSERT(meshIndex < renderState->meshInstanceData.SIZE);
@@ -182,6 +183,8 @@ void PushMesh(MeshId meshId, Mat4 model, Vec3 color, VulkanMeshRenderState* rend
     VulkanMeshInstanceData* instanceData = renderState->meshInstanceData[meshIndex].Append();
     instanceData->model = model;
     instanceData->color = color;
+    instanceData->collapseMid = collapseMid;
+    instanceData->collapseT = collapseT;
 }
 
 void ResetMeshRenderState(VulkanMeshRenderState* renderState)
@@ -332,7 +335,7 @@ bool LoadMeshPipelineSwapchain(const VulkanWindow& window, const VulkanSwapchain
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo };
 
     VkVertexInputBindingDescription bindingDescriptions[2] = {};
-    VkVertexInputAttributeDescription attributeDescriptions[8] = {};
+    VkVertexInputAttributeDescription attributeDescriptions[10] = {};
 
     // Per-vertex attribute bindings
     bindingDescriptions[0].binding = 0;
@@ -380,6 +383,16 @@ bool LoadMeshPipelineSwapchain(const VulkanWindow& window, const VulkanSwapchain
     attributeDescriptions[7].location = 7;
     attributeDescriptions[7].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescriptions[7].offset = offsetof(VulkanMeshInstanceData, color);
+
+    attributeDescriptions[8].binding = 1;
+    attributeDescriptions[8].location = 8;
+    attributeDescriptions[8].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[8].offset = offsetof(VulkanMeshInstanceData, collapseMid);
+
+    attributeDescriptions[9].binding = 1;
+    attributeDescriptions[9].location = 9;
+    attributeDescriptions[9].format = VK_FORMAT_R32_SFLOAT;
+    attributeDescriptions[9].offset = offsetof(VulkanMeshInstanceData, collapseT);
 
     VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {};
     vertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
