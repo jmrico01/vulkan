@@ -61,8 +61,17 @@ struct VulkanAppState
     VulkanLightmapMeshPipeline lightmapMeshPipeline;
 };
 
+struct Mob
+{
+    Vec3 pos;
+    float32 yaw;
+    Box hitbox;
+};
+
 struct AppState
 {
+    static const uint32 MAX_MOBS = 16;
+
     VulkanAppState vulkanAppState;
     VulkanFontFace fontFaces[FontId::COUNT];
 
@@ -73,6 +82,8 @@ struct AppState
 
     Vec3 cameraPos;
     Vec2 cameraAngles;
+
+    FixedArray<Mob, MAX_MOBS> mobs;
 
     // Debug
     bool debugView;

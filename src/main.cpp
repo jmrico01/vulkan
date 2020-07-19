@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> crosshair, ability to raycast-hit enemy
 > enemy deform + death anim
 > post-process pipeline for grain
 
@@ -178,6 +177,18 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
+
+        appState->mobs.Clear();
+        Mob* mob;
+
+        const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
+        mob = appState->mobs.Append();
+        mob->pos = Vec3 { 10.0f, 10.0f, 2.6f };
+        mob->yaw = PI_F / 2.0f;
+        mob->hitbox = {
+            .min = mob->pos - hitboxRadius,
+            .max = mob->pos + hitboxRadius
+        };
 
         // Debug views 
         appState->debugView = false;
@@ -348,6 +359,25 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
     const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
 
+    const Quat inverseCameraRot = Inverse(cameraRot);
+    const Vec3 cameraForward = inverseCameraRot * Vec3::unitX;
+
+    uint32 hitMob = appState->mobs.size;
+    float32 hitMobMinDist = 1e8;
+    for (uint32 i = 0; i < appState->mobs.size; i++) {
+        const Mob& mob = appState->mobs[i];
+
+        const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
+        const Vec3 inverseRayDir = Reciprocal(cameraForward);
+        float32 t;
+        if (RayAxisAlignedBoxIntersection(rayOrigin, inverseRayDir, mob.hitbox, &t)) {
+            if (t < hitMobMinDist) {
+                hitMob = i;
+                hitMobMinDist = t;
+            }
+        }
+    }
+
     // Transforms world-view camera (+X forward, +Z up) to Vulkan camera (+Z forward, -Y up)
     const Quat baseCameraRot = QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY)
         * QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX);
@@ -377,11 +407,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
 
             // NOTE easy way out - just raycast from cam pos + forward dir
-            Vec3 rayOrigin = appState->cameraPos;
-            if (appState->noclip) {
-                rayOrigin = appState->noclipPos;
-            }
-            const Vec3 rayDir = Inverse(cameraRot) * Vec3::unitX;
+            const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
+            const Vec3 rayDir = cameraForward;
             const Vec3 planeOrigin = Vec3 {
                 0.0f,
                 0.0f,
@@ -581,8 +608,14 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                               &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
     }
 
-    const Mat4 mobModelMatrix = Translate(Vec3 { 10.0f, 10.0f, 2.6f }) * Rotate(Vec3 { 0.0f, 0.0f, PI_F / 2.0f });
-    PushMesh(MeshId::MOB, mobModelMatrix, Vec3::one * 0.6f, &transientState->frameState.meshRenderState);
+    // Draw mobs
+    {
+        for (uint32 i = 0; i < appState->mobs.size; i++) {
+            const Mob& mob = appState->mobs[i];
+            const Mat4 model = Translate(mob.pos) * Rotate(Vec3 { 0.0f, 0.0f, mob.yaw });
+            PushMesh(MeshId::MOB, model, Vec3::one * 0.6f, &transientState->frameState.meshRenderState);
+        }
+    }
 
     // Draw blocks
     {
@@ -688,6 +721,24 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 }
             }
         }
+    }
+
+    // Draw crosshair
+    {
+        const int crosshairPixels = 3;
+        const int crosshairHalfPixels = crosshairPixels / 2;
+        const Vec2Int crosshairPos = {
+            screenSize.x / 2 - crosshairHalfPixels,
+            screenSize.y / 2 - crosshairHalfPixels
+        };
+        const Vec2Int crosshairSize = { crosshairPixels, crosshairPixels };
+        Vec4 crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 0.2f };
+        if (hitMob != appState->mobs.size) {
+            crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 1.0f };
+        }
+
+        PushSprite((uint32)SpriteId::PIXEL, crosshairPos, crosshairSize, 0.0f, crosshairColor, screenSize,
+                   &transientState->frameState.spriteRenderState);
     }
 
     // ================================================================================================
