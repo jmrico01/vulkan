@@ -541,7 +541,7 @@ bool LoadMeshPipelineWindow(const VulkanWindow& window, VkCommandPool commandPoo
         };
 
         const ObjMesh objMeshes[] = {
-            { MeshId::MOB, ToString("data/models/rockie1.obj") },
+            { MeshId::MOB, ToString("data/models/enemy1.obj") },
         };
 
         for (uint32 i = 0; i < C_ARRAY_LENGTH(objMeshes); i++) {

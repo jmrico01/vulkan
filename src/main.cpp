@@ -30,8 +30,8 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> basic enemy, just standing around
 > crosshair, ability to raycast-hit enemy
+> enemy deform + death anim
 > post-process pipeline for grain
 
 */
@@ -580,6 +580,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelBlockEditor.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
                               &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
     }
+
+    const Mat4 mobModelMatrix = Translate(Vec3 { 10.0f, 10.0f, 2.6f }) * Rotate(Vec3 { 0.0f, 0.0f, PI_F / 2.0f });
+    PushMesh(MeshId::MOB, mobModelMatrix, Vec3::one * 0.6f, &transientState->frameState.meshRenderState);
 
     // Draw blocks
     {
