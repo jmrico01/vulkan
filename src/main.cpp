@@ -30,7 +30,9 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> layer-by-layer, block-by-block editor
+> collision
+> basic enemy, just standing around
+> crosshair, ability to raycast-hit enemy
 > post-process pipeline for grain
 
 */
