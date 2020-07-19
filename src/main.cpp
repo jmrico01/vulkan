@@ -310,41 +310,36 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         const VulkanFontFace& fontNormal = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
         const VulkanFontFace& fontTitle = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_24];
 
-        if (KeyPressed(input, KM_KEY_ARROW_UP)) {
-            appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE_Z);
-        }
-        if (KeyPressed(input, KM_KEY_ARROW_DOWN)) {
-            appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE_Z);
-        }
-
-        // NOTE easy way out - just raycast from cam pos + forward dir
-        Vec3 rayOrigin = appState->cameraPos;
-        if (appState->noclip) {
-            rayOrigin = appState->noclipPos;
-        }
-        const Vec3 rayDir = Inverse(cameraRot) * Vec3::unitX;
-        const Vec3 planeOrigin = Vec3 {
-            0.0f,
-            0.0f,
-            (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
-        };
-        const Vec3 planeNormal = Vec3::unitZ;
-        float32 t;
-        if (RayPlaneIntersection(rayOrigin, rayDir, planeOrigin, planeNormal, &t) && t >= 0.0f) {
-            const Vec3 intersect = rayOrigin + t * rayDir;
-            const int x = (int)(intersect.x / appState->blockSize) + BLOCK_ORIGIN_X;
-            const int y = (int)(intersect.y / appState->blockSize) + BLOCK_ORIGIN_Y;
-            if (0 <= x && x < BLOCKS_SIZE_X && 0 <= y && y < BLOCKS_SIZE_Y) {
-                hoveredX = x;
-                hoveredY = y;
+        if (appState->blockEditor) {
+            if (KeyPressed(input, KM_KEY_ARROW_UP)) {
+                appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE_Z);
             }
-        }
+            if (KeyPressed(input, KM_KEY_ARROW_DOWN)) {
+                appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE_Z);
+            }
 
-        if (hoveredX > 0 && hoveredY > 0) {
-            if (MousePressed(input, KM_MOUSE_LEFT)) {
-                BlockId blockId = appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id;
-                blockId = (BlockId)(((int)blockId + 1) % (int)BlockId::COUNT);
-                appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id = blockId;
+            // NOTE easy way out - just raycast from cam pos + forward dir
+            Vec3 rayOrigin = appState->cameraPos;
+            if (appState->noclip) {
+                rayOrigin = appState->noclipPos;
+            }
+            const Vec3 rayDir = Inverse(cameraRot) * Vec3::unitX;
+            const Vec3 planeOrigin = Vec3 {
+                0.0f,
+                0.0f,
+                (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
+            };
+            const Vec3 planeNormal = Vec3::unitZ;
+            float32 t;
+            if (RayPlaneIntersection(rayOrigin, rayDir, planeOrigin, planeNormal, &t) && t >= 0.0f) {
+                // TODO I think this position is a bit off
+                const Vec3 intersect = rayOrigin + t * rayDir;
+                const int x = (int)(intersect.x / appState->blockSize) + BLOCK_ORIGIN_X;
+                const int y = (int)(intersect.y / appState->blockSize) + BLOCK_ORIGIN_Y;
+                if (0 <= x && x < BLOCKS_SIZE_X && 0 <= y && y < BLOCKS_SIZE_Y) {
+                    hoveredX = x;
+                    hoveredY = y;
+                }
             }
         }
 
@@ -498,13 +493,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         Panel panelBlockEditor(&allocator);
         panelBlockEditor.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
 
-        bool minimized = !appState->blockEditor;
-        panelBlockEditor.TitleBar(ToString("Block Editor"), &minimized, Vec4::zero, &fontTitle);
-        appState->blockEditor = !minimized;
+        bool blockEditorMinimized = !appState->blockEditor;
+        const bool blockEditorChanged = panelBlockEditor.TitleBar(ToString("Block Editor"), &blockEditorMinimized,
+                                                                  Vec4::zero, &fontTitle);
+        if (blockEditorChanged) {
+            appState->blockEditor = !blockEditorMinimized;
+            if (appState->blockEditor) {
+                LockCursor(true);
+            }
+        }
 
         panelBlockEditor.Text(AllocPrintf(&allocator, "selected Z (up/down arrows): %lu", appState->selectedZ));
         if (hoveredX > 0 && hoveredY > 0) {
             panelBlockEditor.Text(AllocPrintf(&allocator, "hovered X, Y: %d, %d", hoveredX, hoveredY));
+
+            // NOTE using MouseReleased here to match the minimization behavior for the block editor panel
+            if (appState->blockEditor && !blockEditorChanged && MouseReleased(input, KM_MOUSE_LEFT)) {
+                BlockId blockId = appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id;
+                blockId = (BlockId)(((int)blockId + 1) % (int)BlockId::COUNT);
+                appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id = blockId;
+            }
         }
 
         panelBlockEditor.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,

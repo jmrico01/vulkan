@@ -89,7 +89,7 @@ struct Panel
     void Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags,
                Vec2Int position, float32 anchorX);
 
-    void TitleBar(const_string text, bool* minimized = nullptr, Vec4 color = Vec4::zero,
+    bool TitleBar(const_string text, bool* minimized = nullptr, Vec4 color = Vec4::zero,
                   const VulkanFontFace* fontFace = nullptr);
 
 	void Text(const_string text, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);

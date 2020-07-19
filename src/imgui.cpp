@@ -36,16 +36,17 @@ void Panel::Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFl
     this->fontFaceDefault = fontFace;
 }
 
-void Panel::TitleBar(const_string text, bool* minimized, Vec4 color, const VulkanFontFace* fontFace)
+bool Panel::TitleBar(const_string text, bool* minimized, Vec4 color, const VulkanFontFace* fontFace)
 {
     DEBUG_ASSERT(renderCommands.size == 0);
 
+    bool changed = false;
     if (minimized == nullptr) {
         Text(text, color, fontFace);
     }
     else {
         bool notMinimized = !(*minimized);
-        Checkbox(&notMinimized, text, color, fontFace);
+        changed = Checkbox(&notMinimized, text, color, fontFace);
         *minimized = !notMinimized;
         if (*minimized) {
             flags |= PanelFlag::MINIMIZED;
@@ -53,6 +54,8 @@ void Panel::TitleBar(const_string text, bool* minimized, Vec4 color, const Vulka
     }
 
     Text(const_string::empty, color, fontFaceDefault);
+
+    return changed;
 }
 
 void Panel::Text(const_string text, Vec4 color, const VulkanFontFace* fontFace)
