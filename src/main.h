@@ -72,7 +72,7 @@ struct Mob
 
 struct AppState
 {
-    static const uint32 MAX_MOBS = 256;
+    static const uint32 MAX_MOBS = 1024;
 
     VulkanAppState vulkanAppState;
     VulkanFontFace fontFaces[FontId::COUNT];
@@ -95,11 +95,12 @@ struct AppState
     Vec3 noclipPos;
 
     bool cityGenMinimized;
+    PanelSliderState sliderBlockSize;
+    PanelSliderState sliderMobSpawnFreq;
     PanelInputIntState inputStreetSize;
     PanelInputIntState inputSidewalkSize;
     PanelInputIntState inputBuildingSize;
     PanelInputIntState inputBuildingHeight;
-    PanelSliderState sliderBlockSize;
 
     bool blockEditor;
     uint32 selectedZ;

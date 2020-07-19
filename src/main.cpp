@@ -30,6 +30,7 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
+> saveable block grids
 > post-process pipeline for grain
 
 */
@@ -49,6 +50,8 @@ const uint32 DEFAULT_BUILDING_SIZE = 10;
 const uint32 DEFAULT_BUILDING_HEIGHT = 3;
 
 const float32 BLOCK_COLLISION_MARGIN = 0.2f;
+
+const float32 DEFAULT_MOB_SPAWN_FREQ = 0.01f;
 
 internal AppState* GetAppState(AppMemory* memory)
 {
@@ -164,7 +167,7 @@ void SpawnMobs(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigi
 
                     Mob* mob = mobs->Append();
                     mob->pos = blockPos + Vec3 { blockSize / 2.0f, blockSize / 2.0f, 2.6f } ;
-                    mob->yaw = PI_F / 2.0f;
+                    mob->yaw = RandFloat32() * 2.0f * PI_F;
                     mob->hitbox = {
                         .min = mob->pos - hitboxRadius,
                         .max = mob->pos + hitboxRadius
@@ -206,7 +209,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, 0.01f, &appState->mobs);
+        SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, DEFAULT_MOB_SPAWN_FREQ, &appState->mobs);
 
         appState->collapsingMobIndex = appState->mobs.size;
 
@@ -217,11 +220,12 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->noclipPos = startPos;
 
         appState->cityGenMinimized = true;
+        appState->sliderBlockSize.value = appState->blockSize;
+        appState->sliderMobSpawnFreq.value = DEFAULT_MOB_SPAWN_FREQ;
         appState->inputStreetSize.Initialize(DEFAULT_STREET_SIZE);
         appState->inputSidewalkSize.Initialize(DEFAULT_SIDEWALK_SIZE);
         appState->inputBuildingSize.Initialize(DEFAULT_BUILDING_SIZE);
         appState->inputBuildingHeight.Initialize(DEFAULT_BUILDING_HEIGHT);
-        appState->sliderBlockSize.value = appState->blockSize;
 
         appState->blockEditor = false;
         appState->selectedZ = 0;
@@ -608,6 +612,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             appState->blockSize = appState->sliderBlockSize.value;
         }
 
+        panelCityGen.Text(ToString("mob spawn frequency:"));
+        panelCityGen.SliderFloat(&appState->sliderMobSpawnFreq, 0.0f, 1.0f);
+
         panelCityGen.Text(ToString("street size:"));
         panelCityGen.InputInt(&appState->inputStreetSize, inputTextColor);
 
@@ -627,6 +634,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 GenerateCityBlocks(appState->inputStreetSize.value, appState->inputSidewalkSize.value,
                                    appState->inputBuildingSize.value, appState->inputBuildingHeight.value,
                                    &allocator, &appState->blockGrid);
+
+                SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, appState->sliderMobSpawnFreq.value,
+                          &appState->mobs);
             }
         }
 
