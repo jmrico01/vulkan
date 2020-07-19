@@ -23,13 +23,14 @@ const uint32 BLOCK_ORIGIN_X = BLOCKS_SIZE_X / 2;
 const uint32 BLOCK_ORIGIN_Y = BLOCKS_SIZE_Y / 2;
 const uint32 BLOCK_ORIGIN_Z = 1;
 
-
 enum class BlockId
 {
     NONE = 0,
     SIDEWALK,
     STREET,
     BUILDING,
+
+    COUNT
 };
 
 struct Block
@@ -74,6 +75,8 @@ struct AppState
     VulkanAppState vulkanAppState;
     VulkanFontFace fontFaces[FontId::COUNT];
 
+    float32 elapsedTime;
+
     BlockGrid blockGrid;
     float32 blockSize;
 
@@ -92,6 +95,9 @@ struct AppState
     PanelInputIntState inputBuildingSize;
     PanelInputIntState inputBuildingHeight;
     PanelSliderState sliderBlockSize;
+
+    bool blockEditor;
+    uint32 selectedZ;
 };
 
 struct FrameState

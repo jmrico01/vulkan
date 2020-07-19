@@ -18,6 +18,15 @@
 #define ENABLE_THREADS 1
 #define ENABLE_LIGHTMAPPED_MESH 0
 
+#define DEFINE_BLOCK_ROTATION_MATRICES const Mat4 top    = Translate(Vec3::unitZ); \
+const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f }))); \
+const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) * \
+UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitX)); \
+const Mat4 right  = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX)); \
+const Mat4 front  = Translate(Vec3 { 1.0f, 0.0f, 1.0f }) * \
+UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitY)); \
+const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY));
+
 /*
 TODO
 
@@ -107,6 +116,14 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
     }
 }
 
+void DrawSlab(uint32 x, uint32 y, uint32 z, uint32 sizeX, uint32 sizeY, uint32 sizeZ, float32 blockSize)
+{
+    DEFINE_BLOCK_ROTATION_MATRICES;
+
+    const Mat4 scale = Scale(Vec3 { (float32)sizeX, (float32)sizeY, (float32)sizeZ } * blockSize);
+
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
@@ -147,7 +164,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->inputSidewalkSize.Initialize(DEFAULT_SIDEWALK_SIZE);
         appState->inputBuildingSize.Initialize(DEFAULT_BUILDING_SIZE);
         appState->inputBuildingHeight.Initialize(DEFAULT_BUILDING_HEIGHT);
-        appState->sliderBlockSize.value = DEFAULT_BLOCK_SIZE;
+        appState->sliderBlockSize.value = appState->blockSize;
+
+        appState->blockEditor = false;
+        appState->selectedZ = 0;
 
         memory->initialized = true;
     }
@@ -158,6 +178,24 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         ResetTextRenderState(&transientState->frameState.textRenderState);
 
         ResetMeshRenderState(&transientState->frameState.meshRenderState);
+    }
+
+    appState->elapsedTime += deltaTime;
+
+    if (KeyPressed(input, KM_KEY_G)) {
+        appState->debugView = !appState->debugView;
+        appState->noclip = appState->debugView;
+        LockCursor(!appState->debugView);
+        appState->blockEditor = false;
+    }
+
+    if (KeyPressed(input, KM_KEY_ESCAPE)) {
+        bool cursorLocked = IsCursorLocked();
+        LockCursor(!cursorLocked);
+    }
+
+    if (KeyPressed(input, KM_KEY_N)) {
+        appState->noclip = !appState->noclip;
     }
 
 #if ENABLE_LIGHTMAPPED_MESH
@@ -186,17 +224,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     }
 #endif
 
-    if (KeyPressed(input, KM_KEY_ESCAPE)) {
-        bool cursorLocked = IsCursorLocked();
-        LockCursor(!cursorLocked);
-    }
-    if (KeyPressed(input, KM_KEY_G)) {
-        appState->debugView = !appState->debugView;
-    }
-    if (KeyPressed(input, KM_KEY_N)) {
-        appState->noclip = !appState->noclip;
-    }
-
     const float32 cameraSensitivity = 2.0f;
     const Vec2 mouseDeltaFrac = {
         (float32)input.mouseDelta.x / (float32)screenSize.x,
@@ -214,8 +241,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Quat cameraRotPitch = QuatFromAngleUnitAxis(appState->cameraAngles.y, Vec3::unitY);
 
     const Quat cameraRotYawInv = Inverse(cameraRotYaw);
-    const Vec3 cameraForward = cameraRotYawInv * Vec3::unitX;
-    const Vec3 cameraRight = cameraRotYawInv * -Vec3::unitY;
+    const Vec3 cameraForwardXY = cameraRotYawInv * Vec3::unitX;
+    const Vec3 cameraRightXY = cameraRotYawInv * -Vec3::unitY;
     const Vec3 cameraUp = Vec3::unitZ;
 
     float32 speed = 5.0f;
@@ -230,16 +257,16 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     Vec3 velocity = Vec3::zero;
     if (KeyDown(input, KM_KEY_W)) {
-        velocity += cameraForward;
+        velocity += cameraForwardXY;
     }
     if (KeyDown(input, KM_KEY_S)) {
-        velocity -= cameraForward;
+        velocity -= cameraForwardXY;
     }
     if (KeyDown(input, KM_KEY_A)) {
-        velocity -= cameraRight;
+        velocity -= cameraRightXY;
     }
     if (KeyDown(input, KM_KEY_D)) {
-        velocity += cameraRight;
+        velocity += cameraRightXY;
     }
     if (appState->noclip) {
         if (KeyDown(input, KM_KEY_SPACE)) {
@@ -281,82 +308,117 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const float32 farZ = 100.0f;
     const Mat4 proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
-    // Draw blocks
-    {
-        const Mat4 scale = Scale(appState->blockSize);
-
-        const Mat4 top    = Translate(Vec3::unitZ);
-        const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f })));
-        const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) *
-            UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitX));
-        const Mat4 right  = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitX));
-        const Mat4 front  = Translate(Vec3 { 1.0f, 0.0f, 1.0f }) *
-            UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F / 2.0f, Vec3::unitY));
-        const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitY));
-
-        for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
-            for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
-                for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
-                    const Block block = appState->blockGrid[z][y][x];
-
-                    Vec3 color = Vec3::one;
-                    switch (block.id) {
-                        case BlockId::NONE: {
-                            continue;
-                        } break;
-                        case BlockId::SIDEWALK: {
-                            color = Vec3::one * 0.7f;
-                        } break;
-                        case BlockId::STREET: {
-                            color = Vec3::one * 0.5f;
-                        } break;
-                        case BlockId::BUILDING: {
-                            color = Vec3::one * 0.8f;
-                        } break;
-                    }
-
-                    const Vec3 pos = {
-                        (float32)((int)x - (int)BLOCK_ORIGIN_X) * appState->blockSize,
-                        (float32)((int)y - (int)BLOCK_ORIGIN_Y) * appState->blockSize,
-                        (float32)((int)z - (int)BLOCK_ORIGIN_Z) * appState->blockSize,
-                    };
-                    const Mat4 posTransform = Translate(pos);
-                    if (z == BLOCKS_SIZE_Z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * top, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (z == 0 || appState->blockGrid[z - 1][y][x].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (y == BLOCKS_SIZE_Y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * left, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * right, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (x == BLOCKS_SIZE_X - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * front, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE) {
-                        PushMesh(MeshId::TILE, posTransform * scale * back, color,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                }
-            }
-        }
-    }
-
     // Debug views
+    int hoveredX = -1, hoveredY = -1;
     if (appState->debugView) {
         LinearAllocator allocator(transientState->scratch);
 
         const VulkanFontFace& fontNormal = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
         const VulkanFontFace& fontTitle = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_24];
+
+        if (KeyPressed(input, KM_KEY_ARROW_UP)) {
+            appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE_Z);
+        }
+        if (KeyPressed(input, KM_KEY_ARROW_DOWN)) {
+            appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE_Z);
+        }
+
+        // NOTE easy way out - just raycast from cam pos + forward dir
+        Vec3 rayOrigin = appState->cameraPos;
+        if (appState->noclip) {
+            rayOrigin = appState->noclipPos;
+        }
+        const Vec3 rayDir = Inverse(cameraRot) * Vec3::unitX;
+        const Vec3 planeOrigin = Vec3 {
+            0.0f,
+            0.0f,
+            (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
+        };
+        const Vec3 planeNormal = Vec3::unitZ;
+        float32 t;
+        if (RayPlaneIntersection(rayOrigin, rayDir, planeOrigin, planeNormal, &t) && t >= 0.0f) {
+            const Vec3 intersect = rayOrigin + t * rayDir;
+            const int x = (int)(intersect.x / appState->blockSize) + BLOCK_ORIGIN_X;
+            const int y = (int)(intersect.y / appState->blockSize) + BLOCK_ORIGIN_Y;
+            if (0 <= x && x < BLOCKS_SIZE_X && 0 <= y && y < BLOCKS_SIZE_Y) {
+                hoveredX = x;
+                hoveredY = y;
+            }
+        }
+
+        if (hoveredX > 0 && hoveredY > 0) {
+            if (MousePressed(input, KM_MOUSE_LEFT)) {
+                BlockId blockId = appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id;
+                blockId = (BlockId)(((int)blockId + 1) % (int)BlockId::COUNT);
+                appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id = blockId;
+            }
+        }
+
+#if 0
+        // TODO jesus christ, help
+        Mat4 inverseViewProj;
+        DEBUG_ASSERT(Inverse(proj * view, &inverseViewProj));
+        const Vec3 rayOriginNdc = ToVec3(ScreenPosToNdc(input.mousePos, screenSize), 0.0f);
+        const Vec4 rayOriginNdc4 = ToVec4(rayOriginNdc, 1.0f);
+        const Vec4 rayOriginWorld4 = inverseViewProj * rayOriginNdc4;
+        const Vec3 rayOriginWorld = Vec3 { rayOriginWorld4.x, rayOriginWorld4.y, rayOriginWorld4.z } / rayOriginWorld4.w;
+
+        const Vec3 rayDirNdc = Vec3::unitZ;
+        const Vec4 rayDirNdc4 = ToVec4(rayDirNdc, 0.0f); // NOTE w=1 is important, but not sure why
+        const Vec4 rayDirWorld4 = inverseViewProj * rayDirNdc4;
+        const Vec3 rayDirWorld = Normalize(Vec3 { rayDirWorld4.x, rayDirWorld4.y, rayDirWorld4.z });
+
+        const Vec3 planeOriginWorld = Vec3 {
+            0.0f,
+            0.0f,
+            (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
+        };
+        const Vec4 planeOriginWorld4 = ToVec4(planeOriginWorld, 1.0f);
+        const Vec4 planeOriginNdc4 = proj * view * planeOriginWorld4;
+        const Vec3 planeOriginNdc = Vec3 { planeOriginNdc4.x, planeOriginNdc4.y, planeOriginNdc4.z } / planeOriginNdc4.w;
+
+        const Vec3 planeNormalWorld = Vec3::unitZ;
+        const Vec4 planeNormalWorld4 = ToVec4(planeNormalWorld, 0.0f);
+        const Vec4 planeNormalNdc4 = proj * view * planeNormalWorld4;
+        const Vec3 planeNormalNdc = Normalize(Vec3 { planeNormalNdc4.x, planeNormalNdc4.y, planeNormalNdc4.z });
+
+        Panel panelTest(&allocator);
+        panelTest.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, Vec2Int { 400, 100 }, 0.0f);
+
+        panelTest.Text(AllocPrintf(&allocator, "rayOriginNdc: %.03f, %.03f, %.03f",
+                                   rayOriginNdc.x, rayOriginNdc.y, rayOriginNdc.z));
+        panelTest.Text(AllocPrintf(&allocator, "rayOriginWorld: %.03f, %.03f, %.03f",
+                                   rayOriginWorld.x, rayOriginWorld.y, rayOriginWorld.z));
+        panelTest.Text(AllocPrintf(&allocator, "rayDirNdc: %.03f, %.03f, %.03f",
+                                   rayDirNdc.x, rayDirNdc.y, rayDirNdc.z));
+        panelTest.Text(AllocPrintf(&allocator, "rayDirWorld: %.03f, %.03f, %.03f",
+                                   rayDirWorld.x, rayDirWorld.y, rayDirWorld.z));
+        panelTest.Text(string::empty);
+
+        panelTest.Text(AllocPrintf(&allocator, "planeOriginWorld: %.03f, %.03f, %.03f",
+                                   planeOriginWorld.x, planeOriginWorld.y, planeOriginWorld.z));
+        panelTest.Text(AllocPrintf(&allocator, "planeOriginNdc: %.03f, %.03f, %.03f",
+                                   planeOriginNdc.x, planeOriginNdc.y, planeOriginNdc.z));
+        panelTest.Text(AllocPrintf(&allocator, "planeNormalWorld: %.03f, %.03f, %.03f",
+                                   planeNormalWorld.x, planeNormalWorld.y, planeNormalWorld.z));
+        panelTest.Text(AllocPrintf(&allocator, "planeNormalNdc: %.03f, %.03f, %.03f",
+                                   planeNormalNdc.x, planeNormalNdc.y, planeNormalNdc.z));
+        panelTest.Text(string::empty);
+
+        float32 t;
+        if (RayPlaneIntersection(rayOriginWorld, rayDirWorld, planeOriginWorld, planeNormalWorld, &t) && t >= 0.0f) {
+            const Vec3 intersectWorld = rayOriginWorld + t * rayDirWorld;
+            panelTest.Text(AllocPrintf(&allocator, "t %.03f", t));
+            panelTest.Text(AllocPrintf(&allocator, "intersectWorld: %.03f, %.03f, %.03f",
+                                       intersectWorld.x, intersectWorld.y, intersectWorld.z));
+        }
+
+        panelTest.Draw(Vec2Int::zero, Vec4::one, Vec4::zero, screenSize,
+                       &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+#endif
+
         const Vec4 backgroundColor = Vec4 { 0.0f, 0.0f, 0.0f, 0.5f };
+        const Vec4 inputTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
         const Vec2Int panelBorderSize = Vec2Int { 6, 8 };
         const int panelPosMargin = 50;
 
@@ -369,6 +431,18 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         const float32 frameMs = deltaTime * 1000.0f;
         const_string frameTiming = AllocPrintf(&allocator, "%d fps | %.03f ms", fps, frameMs);
         panelDebugInfo.Text(frameTiming);
+        panelDebugInfo.Text(string::empty);
+
+        const_string cameraPos = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
+                                             appState->cameraPos.x, appState->cameraPos.y, appState->cameraPos.z);
+        const_string noclipPos = AllocPrintf(&allocator, "%.02f, %.02f, %.02f",
+                                             appState->noclipPos.x, appState->noclipPos.y, appState->noclipPos.z);
+        if (appState->noclip) {
+            panelDebugInfo.Text(noclipPos);
+        }
+        else {
+            panelDebugInfo.Text(cameraPos);
+        }
 
         panelDebugInfo.Text(string::empty);
 
@@ -387,7 +461,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelCityGen.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelCityGenPos, 0.0f);
 
         panelCityGen.TitleBar(ToString("City Block Generator"), &appState->cityGenMinimized, Vec4::zero, &fontTitle);
-        const Vec4 inputTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
 
         panelCityGen.Text(ToString("change parameters and"));
         panelCityGen.Text(ToString("press \"Generate\""));
@@ -425,6 +498,132 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         panelCityGen.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
                           &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+
+        // Block editor
+        const Vec2Int panelBlockEditorPos = { panelPosMargin, screenSize.y - panelPosMargin };
+        Panel panelBlockEditor(&allocator);
+        panelBlockEditor.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
+
+        bool minimized = !appState->blockEditor;
+        panelBlockEditor.TitleBar(ToString("Block Editor"), &minimized, Vec4::zero, &fontTitle);
+        appState->blockEditor = !minimized;
+
+        panelBlockEditor.Text(AllocPrintf(&allocator, "selected Z (up/down arrows): %lu", appState->selectedZ));
+        if (hoveredX > 0 && hoveredY > 0) {
+            panelBlockEditor.Text(AllocPrintf(&allocator, "hovered X, Y: %d, %d", hoveredX, hoveredY));
+        }
+
+        panelBlockEditor.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
+                              &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+    }
+
+    // Draw blocks
+    {
+        const Mat4 scale = Scale(appState->blockSize);
+
+        DEFINE_BLOCK_ROTATION_MATRICES;
+
+        for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
+            for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
+                for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
+                    const Block block = appState->blockGrid[z][y][x];
+
+                    bool drawTop    = z == BLOCKS_SIZE_Z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE;
+                    bool drawLeft   = y == BLOCKS_SIZE_Y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE;
+                    bool drawFront  = x == BLOCKS_SIZE_X - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE;
+                    bool drawBottom = z == 0 || appState->blockGrid[z - 1][y][x].id == BlockId::NONE;
+                    bool drawRight  = y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE;
+                    bool drawBack   = x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE;
+
+                    Vec3 color = Vec3::zero;
+                    switch (block.id) {
+                        case BlockId::NONE: {
+                            drawTop = false;
+                            drawLeft = false;
+                            drawFront = false;
+                            drawBottom = false;
+                            drawRight = false;
+                            drawBack = false;
+                        } break;
+                        case BlockId::SIDEWALK: {
+                            color = Vec3::one * 0.7f;
+                        } break;
+                        case BlockId::STREET: {
+                            color = Vec3::one * 0.5f;
+                        } break;
+                        case BlockId::BUILDING: {
+                            color = Vec3::one * 0.8f;
+                        } break;
+                    }
+
+                    if (appState->blockEditor) {
+                        if (z == appState->selectedZ) {
+                            const Vec3 highlightColor = Vec3 { 1.0f, 0.0f, 0.0f };
+                            const Vec3 selectedColor = Vec3 { 0.0f, 1.0f, 1.0f };
+                            const float32 highlightPeriod = 1.0f;
+                            const float32 highlightStrength = 0.1f;
+
+                            const float32 t = Sin32(appState->elapsedTime * 2.0f * PI_F / highlightPeriod) / 2.0f + 0.5f;
+                            color = Lerp(color, highlightColor, t * highlightStrength);
+
+                            const bool hovered = hoveredX > 0 && hoveredY > 0 &&
+                                x == (uint32)hoveredX && y == (uint32)hoveredY;
+                            if (hovered) {
+                                color = Lerp(color, selectedColor, t * highlightStrength * 2.0f);
+                            }
+
+                            if (block.id != BlockId::NONE || hovered) {
+                                drawTop = true;
+                                drawLeft = true;
+                                drawFront = true;
+                                drawBottom = true;
+                                drawRight = true;
+                                drawBack = true;
+                            }
+                        }
+                        else {
+                            drawTop = false;
+                            drawLeft = false;
+                            drawFront = false;
+                            drawBottom = false;
+                            drawRight = false;
+                            drawBack = false;
+                        }
+                    }
+
+                    const Vec3 pos = {
+                        (float32)((int)x - (int)BLOCK_ORIGIN_X) * appState->blockSize,
+                        (float32)((int)y - (int)BLOCK_ORIGIN_Y) * appState->blockSize,
+                        (float32)((int)z - (int)BLOCK_ORIGIN_Z) * appState->blockSize,
+                    };
+                    const Mat4 posTransform = Translate(pos);
+                    if (drawTop) {
+                        PushMesh(MeshId::TILE, posTransform * scale * top, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                    if (drawBottom) {
+                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                    if (drawLeft) {
+                        PushMesh(MeshId::TILE, posTransform * scale * left, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                    if (drawRight) {
+                        PushMesh(MeshId::TILE, posTransform * scale * right, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                    if (drawFront) {
+                        PushMesh(MeshId::TILE, posTransform * scale * front, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                    if (drawBack) {
+                        PushMesh(MeshId::TILE, posTransform * scale * back, color,
+                                 &transientState->frameState.meshRenderState);
+                    }
+                }
+            }
+        }
     }
 
     // ================================================================================================
