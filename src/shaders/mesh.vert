@@ -20,20 +20,30 @@ layout(binding = 0) uniform UniformBufferObject {
 } ubo;
 
 // TODO copied in lightmapMesh.frag
-vec3 lerp(vec3 a, vec3 b, float t)
+vec3 Lerp(vec3 a, vec3 b, float t)
 {
 	return a * (1.0 - t) + b * t;
 }
 
-float random(vec2 uv)
+float Random(vec2 uv)
 {
 	return fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453123);
 }
 
+float CubicPulse(float xMax, float width, float x)
+{
+    x = abs(x - xMax);
+    if (x > width) {
+		return 0.0;
+	}
+
+    x /= width;
+    return 1.0 - x * x * (3.0 - 2.0 * x);
+}
+
 void main()
 {
-	float randMagMax = 0.2;
-	float randMagMin = 0.05;
+	float randMagMax = 0.1;
 
 	vec4 worldNormal = model * vec4(inNormal, 0.0);
     outNormal = normalize(worldNormal.xyz);
@@ -42,12 +52,13 @@ void main()
 	float randOffset = 0.0;
 	if (collapseT > 0.0) {
 		vec2 seedUv = vec2(inPosition.x * inPosition.z * collapseT, inPosition.y * inPosition.z * collapseT);
-		float rand = random(seedUv);
-		float randMag = max((1.0 - collapseT) * randMagMax, randMagMin);
+		float rand = Random(seedUv);
+		float randMag = max(CubicPulse(collapseT, 0.6, 0.5), 0.0) * randMagMax;
 		randOffset = 2.0 * randMag * (rand - 0.5);
 	}
 
-	vec3 collapsedPos = lerp(inPosition, collapseMid, collapseT + randOffset);
+	float t = clamp(collapseT + randOffset, 0.0, 1.0);
+	vec3 collapsedPos = Lerp(inPosition, collapseMid, t);
 
 	vec4 pos = ubo.proj * ubo.view * model * vec4(collapsedPos, 1.0);
     gl_Position = pos;
