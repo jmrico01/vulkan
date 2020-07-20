@@ -43,7 +43,7 @@ float CubicPulse(float xMax, float width, float x)
 
 void main()
 {
-	float randMagMax = 0.1;
+	float randMagMax = 0.15;
 
 	vec4 worldNormal = model * vec4(inNormal, 0.0);
     outNormal = normalize(worldNormal.xyz);
@@ -58,6 +58,7 @@ void main()
 	}
 
 	float t = clamp(collapseT + randOffset, 0.0, 1.0);
+	t = t * t;
 	vec3 collapsedPos = Lerp(inPosition, collapseMid, t);
 
 	vec4 pos = ubo.proj * ubo.view * model * vec4(collapsedPos, 1.0);

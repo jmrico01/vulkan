@@ -752,7 +752,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                     bool drawTop    = (int)z == BLOCKS_SIZE.z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE;
                     bool drawLeft   = (int)y == BLOCKS_SIZE.y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE;
                     bool drawFront  = (int)x == BLOCKS_SIZE.x - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE;
-                    bool drawBottom = z == 0 || appState->blockGrid[z - 1][y][x].id == BlockId::NONE;
+                    bool drawBottom = z != 0 && appState->blockGrid[z - 1][y][x].id == BlockId::NONE;
                     bool drawRight  = y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE;
                     bool drawBack   = x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE;
 
