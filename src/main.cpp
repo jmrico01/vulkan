@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> saveable block grids
 > post-process pipeline for grain
 
 */
