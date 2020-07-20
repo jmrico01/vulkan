@@ -180,6 +180,40 @@ void SpawnMobs(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigi
     }
 }
 
+bool LoadBlockGrid(const_string filePath, BlockGrid* blockGrid, LinearAllocator* allocator)
+{
+    Array<uint8> data = LoadEntireFile(filePath, allocator);
+    if (data.data == nullptr) {
+        return false;
+    }
+    if (data.size != sizeof(Vec3Int) + sizeof(BlockGrid)) {
+        return false;
+    }
+
+    const Vec3Int* fileBlockGridSize = (Vec3Int*)data.data;
+    const BlockGrid* fileBlockGrid = (BlockGrid*)(data.data + sizeof(Vec3Int));
+    if ((uint32)fileBlockGridSize->x != (*blockGrid)[0][0].SIZE
+        || (uint32)fileBlockGridSize->y != (*blockGrid)[0].SIZE
+        || (uint32)fileBlockGridSize->z != blockGrid->SIZE) {
+        return false;
+    }
+
+    MemCopy(blockGrid, fileBlockGrid, sizeof(BlockGrid));
+
+    return true;
+}
+
+bool SaveBlockGrid(const_string filePath, const BlockGrid& blockGrid, LinearAllocator* allocator)
+{
+    const Vec3Int blockGridSize = { (int)blockGrid[0][0].SIZE, (int)blockGrid[0].SIZE, (int)blockGrid.SIZE };
+
+    Array<uint8> data = allocator->NewArray<uint8>(sizeof(Vec3Int) + sizeof(BlockGrid));
+    MemCopy(data.data, &blockGridSize, sizeof(Vec3Int));
+    MemCopy(data.data + sizeof(Vec3Int), &blockGrid, sizeof(BlockGrid));
+
+    return WriteFile(filePath, data, false);
+}
+
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
@@ -245,7 +279,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     if (KeyPressed(input, KM_KEY_G)) {
         appState->debugView = !appState->debugView;
-        appState->noclip = appState->debugView;
         LockCursor(!appState->debugView);
         appState->blockEditor = false;
     }
@@ -637,6 +670,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
                 SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, appState->sliderMobSpawnFreq.value,
                           &appState->mobs);
+            }
+        }
+
+        panelCityGen.Text(string::empty);
+
+        const_string saveFilePath = ToString("data/0.blockgrid");
+        if (panelCityGen.Button(ToString("Save"))) {
+            if (SaveBlockGrid(saveFilePath, appState->blockGrid, &allocator)) {
+                LOG_INFO("Saved block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
+            }
+            else {
+                LOG_ERROR("Failed to save block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
+            }
+        }
+        if (panelCityGen.Button(ToString("Load"))) {
+            if (LoadBlockGrid(saveFilePath, &appState->blockGrid, &allocator)) {
+                LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+            }
+            else {
+                LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
         }
 
