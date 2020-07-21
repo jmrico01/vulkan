@@ -11,7 +11,7 @@
 #include "imgui.h"
 #include "mesh.h"
 
-constexpr Vec3Int BLOCKS_SIZE = { 64, 64, 16 };
+constexpr Vec3Int BLOCKS_SIZE = { 128, 128, 8 };
 constexpr Vec3Int BLOCK_ORIGIN = { BLOCKS_SIZE.x / 2, BLOCKS_SIZE.y / 2, 1 };
 
 enum class BlockId
@@ -103,7 +103,6 @@ struct AppState
     PanelInputIntState inputBuildingHeight;
 
     bool blockEditor;
-    uint32 selectedZ;
 };
 
 struct FrameState

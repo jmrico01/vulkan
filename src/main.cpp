@@ -42,7 +42,7 @@ const bool WINDOW_LOCK_CURSOR = true;
 const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(512);
 
-const float32 DEFAULT_BLOCK_SIZE = 2.0f;
+const float32 DEFAULT_BLOCK_SIZE = 1.0f;
 const uint32 DEFAULT_STREET_SIZE = 3;
 const uint32 DEFAULT_SIDEWALK_SIZE = 2;
 const uint32 DEFAULT_BUILDING_SIZE = 10;
@@ -226,14 +226,38 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         (int)vulkanState.swapchain.extent.height
     };
 
-    const float32 CAMERA_HEIGHT = 1.0f;
+    const float32 CAMERA_HEIGHT = 1.7f;
 
     // Initialize memory if necessary
     if (!memory->initialized) {
         {
             LinearAllocator allocator(transientState->scratch);
+
+#if 1
+            const_string saveFilePath = ToString("data/0.blockgrid");
+            if (LoadBlockGrid(saveFilePath, &appState->blockGrid, &allocator)) {
+                LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+            }
+            else {
+                LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+            }
+
+#if 0
+            for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
+                for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
+                    for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
+                        appState->blockGrid[z][y][x].id = BlockId::SIDEWALK;
+                    }
+                }
+            }
+            appState->blockGrid[BLOCK_ORIGIN.z][BLOCK_ORIGIN.y][BLOCK_ORIGIN.x].id = BlockId::NONE;
+            appState->blockGrid[BLOCK_ORIGIN.z + 1][BLOCK_ORIGIN.y][BLOCK_ORIGIN.x].id = BlockId::NONE;
+#endif
+
+#else
             GenerateCityBlocks(DEFAULT_STREET_SIZE, DEFAULT_SIDEWALK_SIZE,
                                DEFAULT_BUILDING_SIZE, DEFAULT_BUILDING_HEIGHT, &allocator, &appState->blockGrid);
+#endif
         }
         appState->blockSize = DEFAULT_BLOCK_SIZE;
 
@@ -242,7 +266,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, DEFAULT_MOB_SPAWN_FREQ, &appState->mobs);
+        // SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, DEFAULT_MOB_SPAWN_FREQ, &appState->mobs);
 
         appState->collapsingMobIndex = appState->mobs.size;
 
@@ -261,7 +285,6 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->inputBuildingHeight.Initialize(DEFAULT_BUILDING_HEIGHT);
 
         appState->blockEditor = false;
-        appState->selectedZ = 0;
 
         memory->initialized = true;
     }
@@ -278,7 +301,9 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     if (KeyPressed(input, KM_KEY_G)) {
         appState->debugView = !appState->debugView;
-        LockCursor(!appState->debugView);
+        if (!appState->debugView) {
+            LockCursor(true);
+        }
         appState->blockEditor = false;
     }
 
@@ -483,105 +508,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Mat4 proj = Perspective(PI_F / 4.0f, aspect, nearZ, farZ);
 
     // Debug views
-    int hoveredX = -1, hoveredY = -1;
     if (appState->debugView) {
         LinearAllocator allocator(transientState->scratch);
 
         const VulkanFontFace& fontNormal = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_18];
         const VulkanFontFace& fontTitle = appState->fontFaces[(uint32)FontId::OCR_A_REGULAR_24];
-
-        if (appState->blockEditor) {
-            if (KeyPressed(input, KM_KEY_ARROW_UP)) {
-                appState->selectedZ = ClampUInt32(appState->selectedZ + 1, 0, BLOCKS_SIZE.z);
-            }
-            if (KeyPressed(input, KM_KEY_ARROW_DOWN)) {
-                appState->selectedZ = ClampUInt32(appState->selectedZ - 1, 0, BLOCKS_SIZE.z);
-            }
-
-            // NOTE easy way out - just raycast from cam pos + forward dir
-            const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
-            const Vec3 rayDir = cameraForward;
-            const Vec3 planeOrigin = Vec3 {
-                0.0f,
-                0.0f,
-                (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN.z + 1) * appState->blockSize
-            };
-            const Vec3 planeNormal = Vec3::unitZ;
-            float32 t;
-            if (RayPlaneIntersection(rayOrigin, rayDir, planeOrigin, planeNormal, &t) && t >= 0.0f) {
-                // TODO I think this position is a bit off
-                const Vec3 intersect = rayOrigin + t * rayDir;
-                const Vec3Int intersectBlockIndex = WorldPosToBlockIndex(intersect, appState->blockSize,
-                                                                         BLOCKS_SIZE, BLOCK_ORIGIN);
-                if (blockIndex.x != -1) {
-                    hoveredX = intersectBlockIndex.x;
-                    hoveredY = intersectBlockIndex.y;
-                }
-            }
-        }
-
-#if 0
-        // TODO jesus christ, help
-        Mat4 inverseViewProj;
-        DEBUG_ASSERT(Inverse(proj * view, &inverseViewProj));
-        const Vec3 rayOriginNdc = ToVec3(ScreenPosToNdc(input.mousePos, screenSize), 0.0f);
-        const Vec4 rayOriginNdc4 = ToVec4(rayOriginNdc, 1.0f);
-        const Vec4 rayOriginWorld4 = inverseViewProj * rayOriginNdc4;
-        const Vec3 rayOriginWorld = Vec3 { rayOriginWorld4.x, rayOriginWorld4.y, rayOriginWorld4.z } / rayOriginWorld4.w;
-
-        const Vec3 rayDirNdc = Vec3::unitZ;
-        const Vec4 rayDirNdc4 = ToVec4(rayDirNdc, 0.0f); // NOTE w=1 is important, but not sure why
-        const Vec4 rayDirWorld4 = inverseViewProj * rayDirNdc4;
-        const Vec3 rayDirWorld = Normalize(Vec3 { rayDirWorld4.x, rayDirWorld4.y, rayDirWorld4.z });
-
-        const Vec3 planeOriginWorld = Vec3 {
-            0.0f,
-            0.0f,
-            (float32)((int)appState->selectedZ - (int)BLOCK_ORIGIN_Z + 1) * appState->blockSize
-        };
-        const Vec4 planeOriginWorld4 = ToVec4(planeOriginWorld, 1.0f);
-        const Vec4 planeOriginNdc4 = proj * view * planeOriginWorld4;
-        const Vec3 planeOriginNdc = Vec3 { planeOriginNdc4.x, planeOriginNdc4.y, planeOriginNdc4.z } / planeOriginNdc4.w;
-
-        const Vec3 planeNormalWorld = Vec3::unitZ;
-        const Vec4 planeNormalWorld4 = ToVec4(planeNormalWorld, 0.0f);
-        const Vec4 planeNormalNdc4 = proj * view * planeNormalWorld4;
-        const Vec3 planeNormalNdc = Normalize(Vec3 { planeNormalNdc4.x, planeNormalNdc4.y, planeNormalNdc4.z });
-
-        Panel panelTest(&allocator);
-        panelTest.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, Vec2Int { 400, 100 }, 0.0f);
-
-        panelTest.Text(AllocPrintf(&allocator, "rayOriginNdc: %.03f, %.03f, %.03f",
-                                   rayOriginNdc.x, rayOriginNdc.y, rayOriginNdc.z));
-        panelTest.Text(AllocPrintf(&allocator, "rayOriginWorld: %.03f, %.03f, %.03f",
-                                   rayOriginWorld.x, rayOriginWorld.y, rayOriginWorld.z));
-        panelTest.Text(AllocPrintf(&allocator, "rayDirNdc: %.03f, %.03f, %.03f",
-                                   rayDirNdc.x, rayDirNdc.y, rayDirNdc.z));
-        panelTest.Text(AllocPrintf(&allocator, "rayDirWorld: %.03f, %.03f, %.03f",
-                                   rayDirWorld.x, rayDirWorld.y, rayDirWorld.z));
-        panelTest.Text(string::empty);
-
-        panelTest.Text(AllocPrintf(&allocator, "planeOriginWorld: %.03f, %.03f, %.03f",
-                                   planeOriginWorld.x, planeOriginWorld.y, planeOriginWorld.z));
-        panelTest.Text(AllocPrintf(&allocator, "planeOriginNdc: %.03f, %.03f, %.03f",
-                                   planeOriginNdc.x, planeOriginNdc.y, planeOriginNdc.z));
-        panelTest.Text(AllocPrintf(&allocator, "planeNormalWorld: %.03f, %.03f, %.03f",
-                                   planeNormalWorld.x, planeNormalWorld.y, planeNormalWorld.z));
-        panelTest.Text(AllocPrintf(&allocator, "planeNormalNdc: %.03f, %.03f, %.03f",
-                                   planeNormalNdc.x, planeNormalNdc.y, planeNormalNdc.z));
-        panelTest.Text(string::empty);
-
-        float32 t;
-        if (RayPlaneIntersection(rayOriginWorld, rayDirWorld, planeOriginWorld, planeNormalWorld, &t) && t >= 0.0f) {
-            const Vec3 intersectWorld = rayOriginWorld + t * rayDirWorld;
-            panelTest.Text(AllocPrintf(&allocator, "t %.03f", t));
-            panelTest.Text(AllocPrintf(&allocator, "intersectWorld: %.03f, %.03f, %.03f",
-                                       intersectWorld.x, intersectWorld.y, intersectWorld.z));
-        }
-
-        panelTest.Draw(Vec2Int::zero, Vec4::one, Vec4::zero, screenSize,
-                       &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
-#endif
 
         const Vec4 backgroundColor = Vec4 { 0.0f, 0.0f, 0.0f, 0.5f };
         const Vec4 inputTextColor = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -672,10 +603,67 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
         }
 
-        panelCityGen.Text(string::empty);
+        panelCityGen.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
+                          &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+
+        // Block editor
+        const float32 BLOCK_INTERACT_DIST = appState->blockSize * 8.0f;
+        const Vec2Int panelBlockEditorPos = { panelPosMargin, screenSize.y - panelPosMargin };
+
+        Vec3Int hitIndex = { -1, -1, -1 };
+        float32 hitMinDist = 1e8;
+        {
+            const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
+            const Vec3 inverseRayDir = Reciprocal(cameraForward);
+
+            for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
+                for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
+                    for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
+                        if (appState->blockGrid[z][y][x].id == BlockId::NONE) {
+                            continue;
+                        }
+
+                        const Vec3Int blockInd = { (int)x, (int)y, (int)z };
+                        const Vec3 blockPos = BlockIndexToWorldPos(blockInd, appState->blockSize, BLOCK_ORIGIN);
+                        const Box box = {
+                            .min = blockPos,
+                            .max = blockPos + Vec3 { appState->blockSize, appState->blockSize, appState->blockSize },
+                        };
+                        float32 t;
+                        if (RayAxisAlignedBoxIntersection(rayOrigin, inverseRayDir, box, &t)) {
+                            if (t > 0.0f && t < hitMinDist) {
+                                hitIndex = blockInd;
+                                hitMinDist = t;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Panel panelBlockEditor(&allocator);
+        panelBlockEditor.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
+
+        bool blockEditorMinimized = !appState->blockEditor;
+        const bool blockEditorChanged = panelBlockEditor.TitleBar(ToString("Block Editor (B)"), &blockEditorMinimized,
+                                                                  Vec4::zero, &fontTitle);
+        if (blockEditorChanged || KeyPressed(input, KM_KEY_B)) {
+            appState->blockEditor = !appState->blockEditor;
+            if (appState->blockEditor) {
+                LockCursor(true);
+            }
+        }
+
+        panelBlockEditor.Text(string::empty);
+
+        if (panelBlockEditor.Button(ToString("Clear mobs (C)")) || KeyPressed(input, KM_KEY_C)) {
+            appState->mobs.Clear();
+        }
+
+        panelBlockEditor.Text(string::empty);
 
         const_string saveFilePath = ToString("data/0.blockgrid");
-        if (panelCityGen.Button(ToString("Save"))) {
+        if (panelBlockEditor.Button(ToString("Save"))) {
             if (SaveBlockGrid(saveFilePath, appState->blockGrid, &allocator)) {
                 LOG_INFO("Saved block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
             }
@@ -683,7 +671,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 LOG_ERROR("Failed to save block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
             }
         }
-        if (panelCityGen.Button(ToString("Load"))) {
+        if (panelBlockEditor.Button(ToString("Load"))) {
             if (LoadBlockGrid(saveFilePath, &appState->blockGrid, &allocator)) {
                 LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
@@ -692,33 +680,40 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
         }
 
-        panelCityGen.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
-                          &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+        if (hitIndex.x != -1) {
+            panelBlockEditor.Text(AllocPrintf(&allocator, "block %d, %d, %d", hitIndex.x, hitIndex.y, hitIndex.z));
+            panelBlockEditor.Text(AllocPrintf(&allocator, "distance %.02f", hitMinDist));
 
-        // Block editor
-        const Vec2Int panelBlockEditorPos = { panelPosMargin, screenSize.y - panelPosMargin };
-        Panel panelBlockEditor(&allocator);
-        panelBlockEditor.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
+            if (appState->blockEditor && !blockEditorChanged && hitMinDist < BLOCK_INTERACT_DIST) {
+                if (MousePressed(input, KM_MOUSE_LEFT)) {
+                    appState->blockGrid[hitIndex.z][hitIndex.y][hitIndex.x].id = BlockId::NONE;
+                }
+                if (MousePressed(input, KM_MOUSE_RIGHT)) {
+                    if (hitIndex.z != BLOCKS_SIZE.z - 1) {
+                        if (KeyDown(input, KM_KEY_SHIFT)) {
+                            const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
+                            const Vec3 blockPos = BlockIndexToWorldPos(hitIndex, appState->blockSize, BLOCK_ORIGIN);
+                            const Vec3 mobOffset = Vec3 {
+                                appState->blockSize / 2.0f,
+                                appState->blockSize / 2.0f,
+                                2.2f
+                            };
 
-        bool blockEditorMinimized = !appState->blockEditor;
-        const bool blockEditorChanged = panelBlockEditor.TitleBar(ToString("Block Editor"), &blockEditorMinimized,
-                                                                  Vec4::zero, &fontTitle);
-        if (blockEditorChanged) {
-            appState->blockEditor = !blockEditorMinimized;
-            if (appState->blockEditor) {
-                LockCursor(true);
-            }
-        }
-
-        panelBlockEditor.Text(AllocPrintf(&allocator, "selected Z (up/down arrows): %lu", appState->selectedZ));
-        if (hoveredX > 0 && hoveredY > 0) {
-            panelBlockEditor.Text(AllocPrintf(&allocator, "hovered X, Y: %d, %d", hoveredX, hoveredY));
-
-            // NOTE using MouseReleased here to match the minimization behavior for the block editor panel
-            if (appState->blockEditor && !blockEditorChanged && MouseReleased(input, KM_MOUSE_LEFT)) {
-                BlockId blockId = appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id;
-                blockId = (BlockId)(((int)blockId + 1) % (int)BlockId::COUNT);
-                appState->blockGrid[appState->selectedZ][hoveredY][hoveredX].id = blockId;
+                            Mob* newMob = appState->mobs.Append();
+                            newMob->pos = blockPos + mobOffset;
+                            newMob->yaw = RandFloat32() * 2.0f * PI_F;
+                            newMob->hitbox = {
+                                .min = newMob->pos - hitboxRadius,
+                                .max = newMob->pos + hitboxRadius,
+                            };
+                            newMob->collapseT = 0.0f;
+                            newMob->collapsed = false;
+                        }
+                        else {
+                            appState->blockGrid[hitIndex.z + 1][hitIndex.y][hitIndex.x].id = BlockId::SIDEWALK;
+                        }
+                    }
+                }
             }
         }
 
@@ -732,7 +727,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             const Mob& mob = appState->mobs[i];
             if (mob.collapsed) continue;
 
-            const Mat4 model = Translate(mob.pos) * Rotate(Vec3 { 0.0f, 0.0f, mob.yaw });
+            const Mat4 model = Translate(mob.pos) * Rotate(Vec3 { 0.0f, 0.0f, mob.yaw }) * Scale(0.45f);
             PushMesh(MeshId::MOB, model, Vec3::one * 0.6f, Vec3::zero, mob.collapseT,
                      &transientState->frameState.meshRenderState);
         }
@@ -777,6 +772,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                         } break;
                     }
 
+#if 0
                     if (appState->blockEditor) {
                         if (z == appState->selectedZ) {
                             const Vec3 highlightColor = Vec3 { 1.0f, 0.0f, 0.0f };
@@ -811,6 +807,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                             drawBack = false;
                         }
                     }
+#endif
 
                     const Vec3 pos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z },
                                                           appState->blockSize, BLOCK_ORIGIN);

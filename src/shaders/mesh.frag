@@ -11,8 +11,8 @@ void main()
 
 	float lightDirIntensity = 0.8f;
 	vec3 lightDirColor = vec3(1.0, 1.0, 1.0);
-	vec3 lightDir1 = normalize(vec3(0.3, 0.6, -1.0));
-	vec3 lightDir2 = normalize(vec3(-0.4, -0.1, 0.2));
+	vec3 lightDir1 = normalize(vec3(0.2, 0.6, -1.0));
+	vec3 lightDir2 = normalize(vec3(-0.3, -0.1, 0.2));
 
 	vec3 negNormal = -inNormal;
 	float dot1 = max(0.0, dot(negNormal, lightDir1));
