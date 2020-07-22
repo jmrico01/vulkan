@@ -30,6 +30,11 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
+> faster point-at-block raycast
+> simple mob AI (keep going forward / chase player)
+> custom mesh blocks
+> ability to place any block (scroll wheel to switch?)
+> outline of block before placing
 > post-process pipeline for grain
 
 */
