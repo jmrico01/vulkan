@@ -30,6 +30,7 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
+> multiple saved levels
 > simple mob AI (keep going forward / chase player)
 > custom mesh blocks
 > ability to place any block (scroll wheel to switch?)
@@ -324,15 +325,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         appState->noclip = false;
         appState->noclipPos = startPos;
 
-        appState->cityGenMinimized = true;
-        appState->sliderBlockSize.value = appState->blockSize;
-        appState->sliderMobSpawnFreq.value = DEFAULT_MOB_SPAWN_FREQ;
-        appState->inputStreetSize.Initialize(DEFAULT_STREET_SIZE);
-        appState->inputSidewalkSize.Initialize(DEFAULT_SIDEWALK_SIZE);
-        appState->inputBuildingSize.Initialize(DEFAULT_BUILDING_SIZE);
-        appState->inputBuildingHeight.Initialize(DEFAULT_BUILDING_HEIGHT);
-
         appState->blockEditor = false;
+        appState->sliderBlockSize.value = appState->blockSize;
 
         memory->initialized = true;
     }
@@ -569,6 +563,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         // General debug info
         const Vec2Int panelDebugInfoPos = { screenSize.x - panelPosMargin, panelPosMargin };
+
         Panel panelDebugInfo(&allocator);
         panelDebugInfo.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelDebugInfoPos, 1.0f);
 
@@ -604,62 +599,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelDebugInfo.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
                             &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
 
-        // City block generator
-        const Vec2Int panelCityGenPos = { panelPosMargin, panelPosMargin };
-        Panel panelCityGen(&allocator);
-        panelCityGen.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelCityGenPos, 0.0f);
-
-        panelCityGen.TitleBar(ToString("City Block Generator"), &appState->cityGenMinimized, Vec4::zero, &fontTitle);
-
-        panelCityGen.Text(ToString("change parameters and"));
-        panelCityGen.Text(ToString("press \"Generate\""));
-        panelCityGen.Text(string::empty);
-
-        panelCityGen.Text(AllocPrintf(&allocator, "%d x %d x %d blocks",
-                                      BLOCKS_SIZE.x, BLOCKS_SIZE.y, BLOCKS_SIZE.z));
-
-        panelCityGen.Text(ToString("block size:"));
-        if (panelCityGen.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
-            appState->blockSize = appState->sliderBlockSize.value;
-            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                   &appState->blocks.renderInfo);
-        }
-
-        panelCityGen.Text(ToString("mob spawn frequency:"));
-        panelCityGen.SliderFloat(&appState->sliderMobSpawnFreq, 0.0f, 1.0f);
-
-        panelCityGen.Text(ToString("street size:"));
-        panelCityGen.InputInt(&appState->inputStreetSize, inputTextColor);
-
-        panelCityGen.Text(ToString("sidewalk size:"));
-        panelCityGen.InputInt(&appState->inputSidewalkSize, inputTextColor);
-
-        panelCityGen.Text(ToString("building size:"));
-        panelCityGen.InputInt(&appState->inputBuildingSize, inputTextColor);
-
-        panelCityGen.Text(ToString("building height:"));
-        panelCityGen.InputInt(&appState->inputBuildingHeight, inputTextColor);
-
-        if (panelCityGen.Button(ToString("Generate"))) {
-            if (appState->inputStreetSize.valid && appState->inputSidewalkSize.valid
-                && appState->inputBuildingSize.valid && appState->inputBuildingHeight.valid) {
-                LOG_INFO("Re-generating city blocks...\n");
-                GenerateCityBlocks(appState->inputStreetSize.value, appState->inputSidewalkSize.value,
-                                   appState->inputBuildingSize.value, appState->inputBuildingHeight.value,
-                                   &allocator, &appState->blocks.grid);
-
-                UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                       &appState->blocks.renderInfo);
-            }
-        }
-
-        panelCityGen.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
-                          &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
-
-        // Block editor
+        // Block interact
         const uint32 BLOCK_INTERACT_RANGE = 5;
-        const Vec2Int panelBlockEditorPos = { panelPosMargin, screenSize.y - panelPosMargin };
-
         Vec3Int hitIndex = { -1, -1, -1 };
         float32 hitMinDist = 1e8;
         {
@@ -706,8 +647,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
         }
 
+        // Block editor UI
+        const Vec2Int panelBlockEditorPos = { panelPosMargin, panelPosMargin };
+
         Panel panelBlockEditor(&allocator);
-        panelBlockEditor.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
+        panelBlockEditor.Begin(input, &fontNormal, PanelFlag::GROW_DOWNWARDS, panelBlockEditorPos, 0.0f);
 
         bool blockEditorMinimized = !appState->blockEditor;
         const bool blockEditorChanged = panelBlockEditor.TitleBar(ToString("Block Editor (B)"), &blockEditorMinimized,
@@ -719,6 +663,16 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
         }
 
+        panelBlockEditor.Text(AllocPrintf(&allocator, "%d x %d x %d blocks",
+                                          BLOCKS_SIZE.x, BLOCKS_SIZE.y, BLOCKS_SIZE.z));
+
+        panelBlockEditor.Text(ToString("block size:"));
+        if (panelBlockEditor.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
+            appState->blockSize = appState->sliderBlockSize.value;
+            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                   &appState->blocks.renderInfo);
+        }
+
         panelBlockEditor.Text(string::empty);
 
         if (panelBlockEditor.Button(ToString("Clear mobs (C)")) || KeyPressed(input, KM_KEY_C)) {
@@ -727,6 +681,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         panelBlockEditor.Text(string::empty);
 
+        Array<string> dataFiles = ListDir(ToString("data"), &allocator);
+        DEBUG_ASSERT(dataFiles.data != nullptr);
+        for (uint32 i = 0; i < dataFiles.size; i++) {
+        }
         const_string saveFilePath = ToString("data/0.blockgrid");
         if (panelBlockEditor.Button(ToString("Save"))) {
             if (SaveBlockGrid(saveFilePath, appState->blocks.grid, &allocator)) {
@@ -749,6 +707,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         }
 
         if (hitIndex.x != -1) {
+            panelBlockEditor.Text(string::empty);
             panelBlockEditor.Text(AllocPrintf(&allocator, "block %d, %d, %d", hitIndex.x, hitIndex.y, hitIndex.z));
             panelBlockEditor.Text(AllocPrintf(&allocator, "distance %.02f", hitMinDist));
 
@@ -771,7 +730,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
                             Mob* newMob = appState->mobs.Append();
                             newMob->pos = blockPos + mobOffset;
-                            newMob->yaw = RandFloat32() * 2.0f * PI_F;
+                            newMob->yaw = ModFloat32(appState->cameraAngles.x + PI_F, 2.0f * PI_F);
                             newMob->hitbox = {
                                 .min = newMob->pos - hitboxRadius,
                                 .max = newMob->pos + hitboxRadius,
@@ -795,6 +754,39 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         panelBlockEditor.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
                               &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
+
+        // Test upwards panel
+        const Vec2Int panelTestPos = { panelPosMargin, screenSize.y - panelPosMargin };
+
+        Panel panelTest(&allocator);
+        panelTest.Begin(input, &fontNormal, !PanelFlag::GROW_DOWNWARDS, panelTestPos, 0.0f);
+
+        panelTest.Text(ToString("Testing text #1"));
+        panelTest.Text(ToString("Testing text #2"));
+        panelTest.Text(ToString("Testing text #3"));
+
+        panelTest.Text(string::empty);
+
+        panelTest.Button(ToString("Button 1"));
+        panelTest.Button(ToString("Button 2"));
+        panelTest.Button(ToString("Button 3"));
+
+        panelTest.Text(string::empty);
+
+        bool testChecked = false;
+        panelTest.Checkbox(&testChecked, ToString("Checkbox"));
+
+        static PanelSliderState testSlider;
+        panelTest.SliderFloat(&testSlider, 0.0f, 1.0f, ToString("Slider"));
+
+        static PanelInputTextState testInputText;
+        panelTest.InputText(&testInputText);
+
+        static PanelInputIntState testInputInt;
+        panelTest.InputInt(&testInputInt);
+
+        panelTest.Draw(panelBorderSize, Vec4::one, backgroundColor, screenSize,
+                       &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
     }
 
     // Draw mobs

@@ -50,6 +50,12 @@ constexpr PanelFlags GROW_DOWNWARDS = 1 << 0;
 constexpr PanelFlags MINIMIZED      = 1 << 1;
 }
 
+struct PanelDropdownState
+{
+    uint32 selected;
+    bool opened;
+};
+
 struct PanelSliderState
 {
     float32 value;
@@ -75,7 +81,7 @@ struct PanelInputIntState
 struct Panel
 {
     PanelFlags flags;
-	Vec2Int position;
+    Vec2Int position;
 	Vec2Int positionCurrent;
     float32 anchorX;
 	Vec2Int size;
@@ -86,8 +92,9 @@ struct Panel
 
     Panel(LinearAllocator* allocator);
 
-    void Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags,
-               Vec2Int position, float32 anchorX);
+    // NOTE: position is needed on Panel::Begin to properly handle mouse input for all components
+    void Begin(const AppInput& input, const VulkanFontFace* fontFace, PanelFlags flags, Vec2Int position,
+               float32 anchorX);
 
     bool TitleBar(const_string text, bool* minimized = nullptr, Vec4 color = Vec4::zero,
                   const VulkanFontFace* fontFace = nullptr);
@@ -96,6 +103,9 @@ struct Panel
 
 	bool Button(const_string text, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
 	bool Checkbox(bool* value, const_string text, Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);
+
+	bool Dropdown(PanelDropdownState* state, const Array<string>& values, Vec4 color = Vec4::zero,
+                  const VulkanFontFace* fontFace = nullptr);
 
 	bool SliderFloat(PanelSliderState* state, float32 min, float32 max, const_string text = const_string::empty,
                      Vec4 color = Vec4::zero, const VulkanFontFace* fontFace = nullptr);

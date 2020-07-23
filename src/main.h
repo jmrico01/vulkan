@@ -111,15 +111,8 @@ struct AppState
     bool noclip;
     Vec3 noclipPos;
 
-    bool cityGenMinimized;
-    PanelSliderState sliderBlockSize;
-    PanelSliderState sliderMobSpawnFreq;
-    PanelInputIntState inputStreetSize;
-    PanelInputIntState inputSidewalkSize;
-    PanelInputIntState inputBuildingSize;
-    PanelInputIntState inputBuildingHeight;
-
     bool blockEditor;
+    PanelSliderState sliderBlockSize;
 };
 
 struct FrameState
