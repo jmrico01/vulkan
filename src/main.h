@@ -31,6 +31,23 @@ struct Block
 
 using BlockGrid = StaticArray<StaticArray<StaticArray<Block, BLOCKS_SIZE.x>, BLOCKS_SIZE.y>, BLOCKS_SIZE.z>;
 
+struct BlockRenderInfo
+{
+    MeshId meshId;
+    Mat4 model;
+    Vec3 color;
+};
+
+struct BlocksData
+{
+    static const uint32 NUM_BLOCKS = BLOCKS_SIZE.x * BLOCKS_SIZE.y * BLOCKS_SIZE.z;
+
+    BlockGrid grid;
+
+    // This must be updated when the grid is updated
+    FixedArray<BlockRenderInfo, NUM_BLOCKS> renderInfo;
+};
+
 enum class SpriteId
 {
     PIXEL,
@@ -79,7 +96,7 @@ struct AppState
 
     float32 elapsedTime;
 
-    BlockGrid blockGrid;
+    BlocksData blocks;
     float32 blockSize;
 
     Vec3 cameraPos;

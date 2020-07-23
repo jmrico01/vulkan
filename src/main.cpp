@@ -30,7 +30,6 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> faster point-at-block raycast
 > simple mob AI (keep going forward / chase player)
 > custom mesh blocks
 > ability to place any block (scroll wheel to switch?)
@@ -44,7 +43,7 @@ const char* WINDOW_NAME = "vulkan";
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
 const bool WINDOW_LOCK_CURSOR = true;
-const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(1);
+const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(16);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(512);
 
 const float32 DEFAULT_BLOCK_SIZE = 1.0f;
@@ -59,13 +58,17 @@ const float32 DEFAULT_MOB_SPAWN_FREQ = 0.01f;
 
 internal AppState* GetAppState(AppMemory* memory)
 {
+    static_assert(sizeof(AppState) < PERMANENT_MEMORY_SIZE);
     DEBUG_ASSERT(sizeof(AppState) < memory->permanent.size);
+
     return (AppState*)memory->permanent.data;
 }
 
 internal TransientState* GetTransientState(AppMemory* memory)
 {
+    static_assert(sizeof(TransientState) < TRANSIENT_MEMORY_SIZE);
     DEBUG_ASSERT(sizeof(TransientState) < memory->transient.size);
+
     TransientState* transientState = (TransientState*)memory->transient.data;
     transientState->scratch = {
         .size = memory->transient.size - sizeof(TransientState),
@@ -103,6 +106,93 @@ bool IsWalkable(const BlockGrid& blockGrid, Vec3Int blockIndex)
 
     const Block& block = blockGrid[blockIndex.z][blockIndex.y][blockIndex.x];
     return block.id == BlockId::NONE;
+}
+
+void UpdateBlocksRenderInfo(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigin,
+                            FixedArray<BlockRenderInfo, BlocksData::NUM_BLOCKS>* renderInfo)
+{
+    const Mat4 scale = Scale(blockSize);
+    DEFINE_BLOCK_ROTATION_MATRICES;
+
+    renderInfo->Clear();
+
+    const uint32 sizeZ = blockGrid.SIZE;
+    for (uint32 z = 0; z < sizeZ; z++) {
+        const uint32 sizeY = blockGrid[z].SIZE;
+        for (uint32 y = 0; y < sizeY; y++) {
+            const uint32 sizeX = blockGrid[z][y].SIZE;
+            for (uint32 x = 0; x < sizeX; x++) {
+                const Block block = blockGrid[z][y][x];
+
+                bool drawTop    = z != sizeZ - 1 && blockGrid[z + 1][y][x].id == BlockId::NONE;
+                bool drawLeft   = y != sizeY - 1 && blockGrid[z][y + 1][x].id == BlockId::NONE;
+                bool drawFront  = x != sizeX - 1 && blockGrid[z][y][x + 1].id == BlockId::NONE;
+                bool drawBottom = z != 0 && blockGrid[z - 1][y][x].id == BlockId::NONE;
+                bool drawRight  = y != 0 && blockGrid[z][y - 1][x].id == BlockId::NONE;
+                bool drawBack   = x != 0 && blockGrid[z][y][x - 1].id == BlockId::NONE;
+
+                Vec3 color = Vec3::zero;
+                switch (block.id) {
+                    case BlockId::NONE: {
+                        drawTop = false;
+                        drawLeft = false;
+                        drawFront = false;
+                        drawBottom = false;
+                        drawRight = false;
+                        drawBack = false;
+                    } break;
+                    case BlockId::SIDEWALK: {
+                        color = Vec3::one * 0.7f;
+                    } break;
+                    case BlockId::STREET: {
+                        color = Vec3::one * 0.5f;
+                    } break;
+                    case BlockId::BUILDING: {
+                        color = Vec3::one * 0.8f;
+                    } break;
+                }
+
+                const Vec3 pos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z }, blockSize, blockOrigin);
+                const Mat4 posTransform = Translate(pos);
+                if (drawTop) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * top;
+                    info->color = color;
+                }
+                if (drawBottom) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * bottom;
+                    info->color = color;
+                }
+                if (drawLeft) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * left;
+                    info->color = color;
+                }
+                if (drawRight) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * right;
+                    info->color = color;
+                }
+                if (drawFront) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * front;
+                    info->color = color;
+                }
+                if (drawBack) {
+                    BlockRenderInfo* info = renderInfo->Append();
+                    info->meshId = MeshId::TILE;
+                    info->model = posTransform * scale * back;
+                    info->color = color;
+                }
+            }
+        }
+    }
 }
 
 void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingSize, uint32 buildingHeight,
@@ -149,35 +239,6 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
                 }
                 else if (building && z - BLOCK_ORIGIN.z < buildingHeight) {
                     (*blockGrid)[z][y][x].id = BlockId::BUILDING;
-                }
-            }
-        }
-    }
-}
-
-void SpawnMobs(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigin, float32 spawnFreq,
-               FixedArray<Mob, AppState::MAX_MOBS>* mobs)
-{
-    const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
-
-    mobs->Clear();
-    for (uint32 z = 0; z < blockGrid.SIZE; z++) {
-        for (uint32 y = 0; y < blockGrid[z].SIZE; y++) {
-            for (uint32 x = 0; x < blockGrid[z][y].SIZE; x++) {
-                const Block& block = blockGrid[z][y][x];
-                if (mobs->size < mobs->MAX_SIZE && (int)z == blockOrigin.z
-                    && block.id == BlockId::NONE && RandFloat32() < spawnFreq) {
-                    const Vec3 blockPos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z }, blockSize, blockOrigin);
-
-                    Mob* mob = mobs->Append();
-                    mob->pos = blockPos + Vec3 { blockSize / 2.0f, blockSize / 2.0f, 2.6f } ;
-                    mob->yaw = RandFloat32() * 2.0f * PI_F;
-                    mob->hitbox = {
-                        .min = mob->pos - hitboxRadius,
-                        .max = mob->pos + hitboxRadius
-                    };
-                    mob->collapseT = 0.0f;
-                    mob->collapsed = false;
                 }
             }
         }
@@ -235,43 +296,25 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Initialize memory if necessary
     if (!memory->initialized) {
+        appState->blockSize = DEFAULT_BLOCK_SIZE; // NOTE this needs to happen before UpdateBlocksRenderInfo
         {
             LinearAllocator allocator(transientState->scratch);
 
-#if 1
             const_string saveFilePath = ToString("data/0.blockgrid");
-            if (LoadBlockGrid(saveFilePath, &appState->blockGrid, &allocator)) {
+            if (LoadBlockGrid(saveFilePath, &appState->blocks.grid, &allocator)) {
                 LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
             else {
                 LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
-
-#if 0
-            for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
-                for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
-                    for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
-                        appState->blockGrid[z][y][x].id = BlockId::SIDEWALK;
-                    }
-                }
-            }
-            appState->blockGrid[BLOCK_ORIGIN.z][BLOCK_ORIGIN.y][BLOCK_ORIGIN.x].id = BlockId::NONE;
-            appState->blockGrid[BLOCK_ORIGIN.z + 1][BLOCK_ORIGIN.y][BLOCK_ORIGIN.x].id = BlockId::NONE;
-#endif
-
-#else
-            GenerateCityBlocks(DEFAULT_STREET_SIZE, DEFAULT_SIDEWALK_SIZE,
-                               DEFAULT_BUILDING_SIZE, DEFAULT_BUILDING_HEIGHT, &allocator, &appState->blockGrid);
-#endif
+            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                   &appState->blocks.renderInfo);
         }
-        appState->blockSize = DEFAULT_BLOCK_SIZE;
 
         const Vec3 startPos = Vec3 { 0.5f, 0.5f, CAMERA_HEIGHT };
 
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
-
-        // SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, DEFAULT_MOB_SPAWN_FREQ, &appState->mobs);
 
         appState->collapsingMobIndex = appState->mobs.size;
 
@@ -415,23 +458,23 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             };
             if (prevBlockIndex.x >= 0 && prevBlockIndex.y >= 0) {
                 const Vec3 blockOrigin = BlockIndexToWorldPos(prevBlockIndex, appState->blockSize, BLOCK_ORIGIN);
-                if (!IsWalkable(appState->blockGrid, prevBlockIndex - Vec3Int::unitX)) {
+                if (!IsWalkable(appState->blocks.grid, prevBlockIndex - Vec3Int::unitX)) {
                     range.min.x = blockOrigin.x + BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blockGrid, prevBlockIndex + Vec3Int::unitX)) {
+                if (!IsWalkable(appState->blocks.grid, prevBlockIndex + Vec3Int::unitX)) {
                     range.max.x = blockOrigin.x + appState->blockSize - BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blockGrid, prevBlockIndex - Vec3Int::unitY)) {
+                if (!IsWalkable(appState->blocks.grid, prevBlockIndex - Vec3Int::unitY)) {
                     range.min.y = blockOrigin.y + BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blockGrid, prevBlockIndex + Vec3Int::unitY)) {
+                if (!IsWalkable(appState->blocks.grid, prevBlockIndex + Vec3Int::unitY)) {
                     range.max.y = blockOrigin.y + appState->blockSize - BLOCK_COLLISION_MARGIN;
                 }
             }
 
             Vec3 newPos = appState->cameraPos + velocity;
             const Vec2 prevPos2 = { prevPos.x, prevPos.y };
-            if (IsWalkable(appState->blockGrid, prevBlockIndex)) {
+            if (IsWalkable(appState->blocks.grid, prevBlockIndex)) {
                 newPos.x = ClampFloat32(newPos.x, range.min.x, range.max.x);
                 newPos.y = ClampFloat32(newPos.y, range.min.y, range.max.y);
             }
@@ -578,6 +621,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelCityGen.Text(ToString("block size:"));
         if (panelCityGen.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
             appState->blockSize = appState->sliderBlockSize.value;
+            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                   &appState->blocks.renderInfo);
         }
 
         panelCityGen.Text(ToString("mob spawn frequency:"));
@@ -601,10 +646,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                 LOG_INFO("Re-generating city blocks...\n");
                 GenerateCityBlocks(appState->inputStreetSize.value, appState->inputSidewalkSize.value,
                                    appState->inputBuildingSize.value, appState->inputBuildingHeight.value,
-                                   &allocator, &appState->blockGrid);
+                                   &allocator, &appState->blocks.grid);
 
-                SpawnMobs(appState->blockGrid, appState->blockSize, BLOCK_ORIGIN, appState->sliderMobSpawnFreq.value,
-                          &appState->mobs);
+                UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                       &appState->blocks.renderInfo);
             }
         }
 
@@ -612,7 +657,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                           &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
 
         // Block editor
-        const float32 BLOCK_INTERACT_DIST = appState->blockSize * 8.0f;
+        const uint32 BLOCK_INTERACT_RANGE = 5;
         const Vec2Int panelBlockEditorPos = { panelPosMargin, screenSize.y - panelPosMargin };
 
         Vec3Int hitIndex = { -1, -1, -1 };
@@ -621,14 +666,29 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
             const Vec3 inverseRayDir = Reciprocal(cameraForward);
 
-            for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
-                for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
-                    for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
-                        if (appState->blockGrid[z][y][x].id == BlockId::NONE) {
+            const Vec3Int startBlockIndex = WorldPosToBlockIndex(rayOrigin, appState->blockSize,
+                                                                 BLOCKS_SIZE, BLOCK_ORIGIN);
+            const int signX = cameraForward.x > 0.0f ? 1 : -1;
+            const int signY = cameraForward.y > 0.0f ? 1 : -1;
+            const int signZ = cameraForward.z > 0.0f ? 1 : -1;
+            for (uint32 z = 0; z < BLOCK_INTERACT_RANGE; z++) {
+                for (uint32 y = 0; y < BLOCK_INTERACT_RANGE; y++) {
+                    for (uint32 x = 0; x < BLOCK_INTERACT_RANGE; x++) {
+                        const Vec3Int blockInd = {
+                            .x = (int)x * signX + startBlockIndex.x,
+                            .y = (int)y * signY + startBlockIndex.y,
+                            .z = (int)z * signZ + startBlockIndex.z,
+                        };
+
+                        if (blockInd.x < 0 || blockInd.x >= BLOCKS_SIZE.x ||
+                            blockInd.y < 0 || blockInd.y >= BLOCKS_SIZE.y ||
+                            blockInd.z < 0 || blockInd.z >= BLOCKS_SIZE.z) {
+                            continue;
+                        }
+                        if (appState->blocks.grid[blockInd.z][blockInd.y][blockInd.x].id == BlockId::NONE) {
                             continue;
                         }
 
-                        const Vec3Int blockInd = { (int)x, (int)y, (int)z };
                         const Vec3 blockPos = BlockIndexToWorldPos(blockInd, appState->blockSize, BLOCK_ORIGIN);
                         const Box box = {
                             .min = blockPos,
@@ -669,7 +729,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         const_string saveFilePath = ToString("data/0.blockgrid");
         if (panelBlockEditor.Button(ToString("Save"))) {
-            if (SaveBlockGrid(saveFilePath, appState->blockGrid, &allocator)) {
+            if (SaveBlockGrid(saveFilePath, appState->blocks.grid, &allocator)) {
                 LOG_INFO("Saved block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
             }
             else {
@@ -677,21 +737,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             }
         }
         if (panelBlockEditor.Button(ToString("Load"))) {
-            if (LoadBlockGrid(saveFilePath, &appState->blockGrid, &allocator)) {
+            if (LoadBlockGrid(saveFilePath, &appState->blocks.grid, &allocator)) {
                 LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
             else {
                 LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
             }
+
+            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                   &appState->blocks.renderInfo);
         }
 
         if (hitIndex.x != -1) {
             panelBlockEditor.Text(AllocPrintf(&allocator, "block %d, %d, %d", hitIndex.x, hitIndex.y, hitIndex.z));
             panelBlockEditor.Text(AllocPrintf(&allocator, "distance %.02f", hitMinDist));
 
-            if (appState->blockEditor && !blockEditorChanged && hitMinDist < BLOCK_INTERACT_DIST) {
+            bool blockGridChanged = false;
+            if (appState->blockEditor && !blockEditorChanged) {
                 if (MousePressed(input, KM_MOUSE_LEFT)) {
-                    appState->blockGrid[hitIndex.z][hitIndex.y][hitIndex.x].id = BlockId::NONE;
+                    appState->blocks.grid[hitIndex.z][hitIndex.y][hitIndex.x].id = BlockId::NONE;
+                    blockGridChanged = true;
                 }
                 if (MousePressed(input, KM_MOUSE_RIGHT)) {
                     if (hitIndex.z != BLOCKS_SIZE.z - 1) {
@@ -715,10 +780,16 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                             newMob->collapsed = false;
                         }
                         else {
-                            appState->blockGrid[hitIndex.z + 1][hitIndex.y][hitIndex.x].id = BlockId::SIDEWALK;
+                            appState->blocks.grid[hitIndex.z + 1][hitIndex.y][hitIndex.x].id = BlockId::SIDEWALK;
+                            blockGridChanged = true;
                         }
                     }
                 }
+            }
+
+            if (blockGridChanged) {
+                UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
+                                       &appState->blocks.renderInfo);
             }
         }
 
@@ -740,109 +811,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Draw blocks
     {
-        const Mat4 scale = Scale(appState->blockSize);
-
-        DEFINE_BLOCK_ROTATION_MATRICES;
-
-        for (uint32 z = 0; z < appState->blockGrid.SIZE; z++) {
-            for (uint32 y = 0; y < appState->blockGrid[z].SIZE; y++) {
-                for (uint32 x = 0; x < appState->blockGrid[z][y].SIZE; x++) {
-                    const Block block = appState->blockGrid[z][y][x];
-
-                    bool drawTop    = (int)z == BLOCKS_SIZE.z - 1 || appState->blockGrid[z + 1][y][x].id == BlockId::NONE;
-                    bool drawLeft   = (int)y == BLOCKS_SIZE.y - 1 || appState->blockGrid[z][y + 1][x].id == BlockId::NONE;
-                    bool drawFront  = (int)x == BLOCKS_SIZE.x - 1 || appState->blockGrid[z][y][x + 1].id == BlockId::NONE;
-                    bool drawBottom = z != 0 && appState->blockGrid[z - 1][y][x].id == BlockId::NONE;
-                    bool drawRight  = y == 0 || appState->blockGrid[z][y - 1][x].id == BlockId::NONE;
-                    bool drawBack   = x == 0 || appState->blockGrid[z][y][x - 1].id == BlockId::NONE;
-
-                    Vec3 color = Vec3::zero;
-                    switch (block.id) {
-                        case BlockId::NONE: {
-                            drawTop = false;
-                            drawLeft = false;
-                            drawFront = false;
-                            drawBottom = false;
-                            drawRight = false;
-                            drawBack = false;
-                        } break;
-                        case BlockId::SIDEWALK: {
-                            color = Vec3::one * 0.7f;
-                        } break;
-                        case BlockId::STREET: {
-                            color = Vec3::one * 0.5f;
-                        } break;
-                        case BlockId::BUILDING: {
-                            color = Vec3::one * 0.8f;
-                        } break;
-                    }
-
-#if 0
-                    if (appState->blockEditor) {
-                        if (z == appState->selectedZ) {
-                            const Vec3 highlightColor = Vec3 { 1.0f, 0.0f, 0.0f };
-                            const Vec3 selectedColor = Vec3 { 0.0f, 1.0f, 1.0f };
-                            const float32 highlightPeriod = 1.0f;
-                            const float32 highlightStrength = 0.1f;
-
-                            const float32 t = Sin32(appState->elapsedTime * 2.0f * PI_F / highlightPeriod) / 2.0f + 0.5f;
-                            color = Lerp(color, highlightColor, t * highlightStrength);
-
-                            const bool hovered = hoveredX > 0 && hoveredY > 0 &&
-                                x == (uint32)hoveredX && y == (uint32)hoveredY;
-                            if (hovered) {
-                                color = Lerp(color, selectedColor, t * highlightStrength * 2.0f);
-                            }
-
-                            if (block.id != BlockId::NONE || hovered) {
-                                drawTop = true;
-                                drawLeft = true;
-                                drawFront = true;
-                                drawBottom = true;
-                                drawRight = true;
-                                drawBack = true;
-                            }
-                        }
-                        else {
-                            drawTop = false;
-                            drawLeft = false;
-                            drawFront = false;
-                            drawBottom = false;
-                            drawRight = false;
-                            drawBack = false;
-                        }
-                    }
-#endif
-
-                    const Vec3 pos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z },
-                                                          appState->blockSize, BLOCK_ORIGIN);
-                    const Mat4 posTransform = Translate(pos);
-                    if (drawTop) {
-                        PushMesh(MeshId::TILE, posTransform * scale * top, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (drawBottom) {
-                        PushMesh(MeshId::TILE, posTransform * scale * bottom, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (drawLeft) {
-                        PushMesh(MeshId::TILE, posTransform * scale * left, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (drawRight) {
-                        PushMesh(MeshId::TILE, posTransform * scale * right, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (drawFront) {
-                        PushMesh(MeshId::TILE, posTransform * scale * front, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                    if (drawBack) {
-                        PushMesh(MeshId::TILE, posTransform * scale * back, color, Vec3::zero, 0.0f,
-                                 &transientState->frameState.meshRenderState);
-                    }
-                }
-            }
+        for (uint32 i = 0; i < appState->blocks.renderInfo.size; i++) {
+            const BlockRenderInfo& renderInfo = appState->blocks.renderInfo[i];
+            PushMesh(renderInfo.meshId, renderInfo.model, renderInfo.color, Vec3::zero, 0.0f,
+                     &transientState->frameState.meshRenderState);
         }
     }
 
