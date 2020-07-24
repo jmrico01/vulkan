@@ -44,7 +44,7 @@ const char* WINDOW_NAME = "vulkan";
 const int WINDOW_START_WIDTH  = 1600;
 const int WINDOW_START_HEIGHT = 900;
 const bool WINDOW_LOCK_CURSOR = true;
-const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(16);
+const uint64 PERMANENT_MEMORY_SIZE = MEGABYTES(128);
 const uint64 TRANSIENT_MEMORY_SIZE = MEGABYTES(512);
 
 const float32 DEFAULT_BLOCK_SIZE = 1.0f;
@@ -246,9 +246,17 @@ void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingS
     }
 }
 
-bool LoadBlockGrid(const_string filePath, BlockGrid* blockGrid, LinearAllocator* allocator)
+string GetLevelFilePath(const_string levelName, LinearAllocator* allocator)
 {
-    Array<uint8> data = LoadEntireFile(filePath, allocator);
+    string path = AllocPrintf(allocator, "data/levels/%.*s.blockgrid", levelName.size, levelName.data);
+    DEBUG_ASSERT(path.data != nullptr);
+    return path;
+}
+
+bool LoadLevel(const_string levelName, BlockGrid* blockGrid, LinearAllocator* allocator)
+{
+    string path = GetLevelFilePath(levelName, allocator);
+    Array<uint8> data = LoadEntireFile(path, allocator);
     if (data.data == nullptr) {
         return false;
     }
@@ -269,7 +277,7 @@ bool LoadBlockGrid(const_string filePath, BlockGrid* blockGrid, LinearAllocator*
     return true;
 }
 
-bool SaveBlockGrid(const_string filePath, const BlockGrid& blockGrid, LinearAllocator* allocator)
+bool SaveLevel(const_string levelName, const BlockGrid& blockGrid, LinearAllocator* allocator)
 {
     const Vec3Int blockGridSize = { (int)blockGrid[0][0].SIZE, (int)blockGrid[0].SIZE, (int)blockGrid.SIZE };
 
@@ -277,7 +285,26 @@ bool SaveBlockGrid(const_string filePath, const BlockGrid& blockGrid, LinearAllo
     MemCopy(data.data, &blockGridSize, sizeof(Vec3Int));
     MemCopy(data.data + sizeof(Vec3Int), &blockGrid, sizeof(BlockGrid));
 
-    return WriteFile(filePath, data, false);
+    string path = GetLevelFilePath(levelName, allocator);
+    return WriteFile(path, data, false);
+}
+
+Array<string> GetSavedLevels(LinearAllocator* allocator)
+{
+    const Array<string> levelFiles = ListDir(ToString("data/levels"), allocator);
+    if (levelFiles.data == nullptr) {
+        return { .size = 0, .data = nullptr };
+    }
+
+    DynamicArray<string, LinearAllocator> validLevelFiles(allocator);
+    for (uint32 i = 0; i < levelFiles.size; i++) {
+        const uint32 find = SubstringSearch(levelFiles[i], ToString(".blockgrid"));
+        if (find != levelFiles[i].size) {
+            validLevelFiles.Append(levelFiles[i].SliceTo(find));
+        }
+    }
+
+    return validLevelFiles.ToArray();
 }
 
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
@@ -301,13 +328,14 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         {
             LinearAllocator allocator(transientState->scratch);
 
-            const_string saveFilePath = ToString("data/0.blockgrid");
-            if (LoadBlockGrid(saveFilePath, &appState->blocks.grid, &allocator)) {
-                LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+            const Array<string> levels = GetSavedLevels(&allocator);
+            if (LoadLevel(levels[0], &appState->blocks.grid, &allocator)) {
+                LOG_INFO("Loaded block grid from %.*s\n", levels[0].size, levels[0].data);
             }
             else {
-                LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+                LOG_ERROR("Failed to load block grid from %.*s\n", levels[0].size, levels[0].data);
             }
+
             UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
                                    &appState->blocks.renderInfo);
         }
@@ -327,6 +355,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         appState->blockEditor = false;
         appState->sliderBlockSize.value = appState->blockSize;
+        appState->loadLevelDropdownState.selected = 0;
 
         memory->initialized = true;
     }
@@ -681,29 +710,31 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
         panelBlockEditor.Text(string::empty);
 
-        Array<string> dataFiles = ListDir(ToString("data"), &allocator);
-        DEBUG_ASSERT(dataFiles.data != nullptr);
-        for (uint32 i = 0; i < dataFiles.size; i++) {
-        }
-        const_string saveFilePath = ToString("data/0.blockgrid");
-        if (panelBlockEditor.Button(ToString("Save"))) {
-            if (SaveBlockGrid(saveFilePath, appState->blocks.grid, &allocator)) {
-                LOG_INFO("Saved block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
+        panelBlockEditor.Text(ToString("Loaded level"));
+        const Array<string> levels = GetSavedLevels(&allocator);
+        if (panelBlockEditor.Dropdown(&appState->loadLevelDropdownState, levels)) {
+            const_string level = levels[appState->loadLevelDropdownState.selected];
+            if (LoadLevel(level, &appState->blocks.grid, &allocator)) {
+                LOG_INFO("Loaded level %.*s\n", level.size, level.data);
             }
             else {
-                LOG_ERROR("Failed to save block grid to %.*s\n", saveFilePath.size, saveFilePath.data);
-            }
-        }
-        if (panelBlockEditor.Button(ToString("Load"))) {
-            if (LoadBlockGrid(saveFilePath, &appState->blocks.grid, &allocator)) {
-                LOG_INFO("Loaded block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
-            }
-            else {
-                LOG_ERROR("Failed to load block grid from %.*s\n", saveFilePath.size, saveFilePath.data);
+                LOG_ERROR("Failed to load level %.*s\n", level.size, level.data);
             }
 
             UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
                                    &appState->blocks.renderInfo);
+        }
+
+        panelBlockEditor.Text(string::empty);
+
+        if (panelBlockEditor.Button(ToString("Save"))) {
+            const_string level = levels[appState->loadLevelDropdownState.selected];
+            if (SaveLevel(level, appState->blocks.grid, &allocator)) {
+                LOG_INFO("Saved level %.*s\n", level.size, level.data);
+            }
+            else {
+                LOG_ERROR("Failed to save level %.*s\n", level.size, level.data);
+            }
         }
 
         if (hitIndex.x != -1) {

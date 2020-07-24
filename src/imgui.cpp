@@ -226,16 +226,60 @@ bool Panel::Checkbox(bool* value, const_string text, Vec4 color, const VulkanFon
 
 bool Panel::Dropdown(PanelDropdownState* state, const Array<string>& values, Vec4 color, const VulkanFontFace* fontFace)
 {
-    UNREFERENCED_PARAMETER(values);
-    UNREFERENCED_PARAMETER(color);
-    UNREFERENCED_PARAMETER(fontFace);
-
     DEBUG_ASSERT(state != nullptr);
+    DEBUG_ASSERT(state->selected < values.size);
     if (flags & PanelFlag::MINIMIZED) {
         return false;
     }
 
-    return false;
+    PanelRenderCommand* textCommand;
+    const Vec2Int textSize = AddText(this, Vec2Int::zero, values[state->selected], color, fontFace, &textCommand);
+    if (state->opened) {
+        AddText(this, Vec2Int { textSize.x, 0 }, ToString(" |"), color, fontFace);
+    }
+    else {
+        AddText(this, Vec2Int { textSize.x, 0 }, ToString(" -"), color, fontFace);
+    }
+
+    const Vec2Int rectOffset = Vec2Int {
+        0, (int)((float32)textCommand->commandText.fontFace->height * (MARGIN_FRACTION - 1.0f))
+    };
+    const bool rectHovered = AddRect(this, rectOffset, textSize, color, true);
+
+    if (MousePressed(*input, KM_MOUSE_LEFT)) {
+        if (rectHovered) {
+            state->opened = !state->opened;
+        }
+    }
+
+    bool changed = false;
+    if (state->opened) {
+        Vec2Int offset = Vec2Int { 0, textSize.y };
+        for (uint32 i = 0; i < values.size; i++) {
+            if (i == state->selected) continue;
+
+            const Vec2Int valueTextSize = AddText(this, offset, values[i], color, fontFace, &textCommand);
+            const bool valueRectHovered = AddRect(this, offset + rectOffset, valueTextSize, color, true);
+            if (valueRectHovered && MouseReleased(*input, KM_MOUSE_LEFT)) {
+                state->selected = i;
+                state->opened = false;
+                changed = true;
+                break;
+            }
+            offset.y += valueTextSize.y;
+        }
+    }
+
+    if (flags & PanelFlag::GROW_DOWNWARDS) {
+        positionCurrent.y += textSize.y;
+    }
+    else {
+        positionCurrent.y -= textSize.y;
+    }
+    size.x = MaxInt(size.x, textSize.x);
+    size.y += textSize.y;
+
+    return changed;
 }
 
 bool Panel::SliderFloat(PanelSliderState* state, float32 min, float32 max, const_string text, Vec4 color,
