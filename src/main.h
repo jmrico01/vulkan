@@ -9,44 +9,8 @@
 #include <km_common/vulkan/km_vulkan_text.h>
 
 #include "imgui.h"
+#include "level.h"
 #include "mesh.h"
-
-constexpr Vec3Int BLOCKS_SIZE = { 128, 128, 32 };
-constexpr Vec3Int BLOCK_ORIGIN = { BLOCKS_SIZE.x / 2, BLOCKS_SIZE.y / 2, 4 };
-
-enum class BlockId
-{
-    NONE = 0,
-    SIDEWALK,
-    STREET,
-    BUILDING,
-
-    COUNT
-};
-
-struct Block
-{
-    BlockId id;
-};
-
-using BlockGrid = StaticArray<StaticArray<StaticArray<Block, BLOCKS_SIZE.x>, BLOCKS_SIZE.y>, BLOCKS_SIZE.z>;
-
-struct BlockRenderInfo
-{
-    MeshId meshId;
-    Mat4 model;
-    Vec3 color;
-};
-
-struct BlocksData
-{
-    static const uint32 NUM_BLOCKS = BLOCKS_SIZE.x * BLOCKS_SIZE.y * BLOCKS_SIZE.z;
-
-    BlockGrid grid;
-
-    // This must be updated when the grid is updated
-    FixedArray<BlockRenderInfo, NUM_BLOCKS> renderInfo;
-};
 
 enum class SpriteId
 {
@@ -78,15 +42,6 @@ struct VulkanAppState
     VulkanLightmapMeshPipeline lightmapMeshPipeline;
 };
 
-struct Mob
-{
-    Vec3 pos;
-    float32 yaw;
-    Box hitbox;
-    float32 collapseT;
-    bool collapsed;
-};
-
 struct AppState
 {
     static const uint32 MAX_MOBS = 1024;
@@ -96,14 +51,10 @@ struct AppState
 
     float32 elapsedTime;
 
-    BlocksData blocks;
-    float32 blockSize;
-
     Vec3 cameraPos;
     Vec2 cameraAngles;
 
-    FixedArray<Mob, MAX_MOBS> mobs;
-    uint32 collapsingMobIndex;
+    LevelData levelData;
 
     // Debug
     bool debugView;

@@ -16,9 +16,10 @@
 #include "lightmap.h"
 
 #define ENABLE_THREADS 1
-#define ENABLE_LIGHTMAPPED_MESH 0
+#define ENABLE_LIGHTMAPPED_MESH 1
+#define ENABLE_GRID 0
 
-#define DEFINE_BLOCK_ROTATION_MATRICES const Mat4 top    = Translate(Vec3::unitZ); \
+#define DEFINE_BLOCK_ROTATION_MATRICES const Mat4 top = Translate(Vec3::unitZ); \
 const Mat4 bottom = UnitQuatToMat4(QuatFromAngleUnitAxis(PI_F, Normalize(Vec3 { 1.0f, 1.0f, 0.0f }))); \
 const Mat4 left   = Translate(Vec3 { 0.0f, 1.0f, 1.0f }) * \
 UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::unitX)); \
@@ -30,11 +31,11 @@ const Mat4 back   = UnitQuatToMat4(QuatFromAngleUnitAxis(-PI_F / 2.0f, Vec3::uni
 /*
 TODO
 
-> multiple saved levels
-> simple mob AI (keep going forward / chase player)
+> handle very large block grids (at least 2048x2048x64)
 > custom mesh blocks
 > ability to place any block (scroll wheel to switch?)
 > outline of block before placing
+> simple mob AI (keep going forward / chase player)
 > post-process pipeline for grain
 
 */
@@ -99,214 +100,6 @@ Vec3 BlockIndexToWorldPos(Vec3Int blockIndex, float32 blockSize, Vec3Int blockOr
     };
 }
 
-bool IsWalkable(const BlockGrid& blockGrid, Vec3Int blockIndex)
-{
-    if (blockIndex.x < 0 || blockIndex.y < 0 || blockIndex.z < 0) {
-        return false;
-    }
-
-    const Block& block = blockGrid[blockIndex.z][blockIndex.y][blockIndex.x];
-    return block.id == BlockId::NONE;
-}
-
-void UpdateBlocksRenderInfo(const BlockGrid& blockGrid, float32 blockSize, Vec3Int blockOrigin,
-                            FixedArray<BlockRenderInfo, BlocksData::NUM_BLOCKS>* renderInfo)
-{
-    const Mat4 scale = Scale(blockSize);
-    DEFINE_BLOCK_ROTATION_MATRICES;
-
-    renderInfo->Clear();
-
-    const uint32 sizeZ = blockGrid.SIZE;
-    for (uint32 z = 0; z < sizeZ; z++) {
-        const uint32 sizeY = blockGrid[z].SIZE;
-        for (uint32 y = 0; y < sizeY; y++) {
-            const uint32 sizeX = blockGrid[z][y].SIZE;
-            for (uint32 x = 0; x < sizeX; x++) {
-                const Block block = blockGrid[z][y][x];
-
-                bool drawTop    = z != sizeZ - 1 && blockGrid[z + 1][y][x].id == BlockId::NONE;
-                bool drawLeft   = y != sizeY - 1 && blockGrid[z][y + 1][x].id == BlockId::NONE;
-                bool drawFront  = x != sizeX - 1 && blockGrid[z][y][x + 1].id == BlockId::NONE;
-                bool drawBottom = z != 0 && blockGrid[z - 1][y][x].id == BlockId::NONE;
-                bool drawRight  = y != 0 && blockGrid[z][y - 1][x].id == BlockId::NONE;
-                bool drawBack   = x != 0 && blockGrid[z][y][x - 1].id == BlockId::NONE;
-
-                Vec3 color = Vec3::zero;
-                switch (block.id) {
-                    case BlockId::NONE: {
-                        drawTop = false;
-                        drawLeft = false;
-                        drawFront = false;
-                        drawBottom = false;
-                        drawRight = false;
-                        drawBack = false;
-                    } break;
-                    case BlockId::SIDEWALK: {
-                        color = Vec3::one * 0.7f;
-                    } break;
-                    case BlockId::STREET: {
-                        color = Vec3::one * 0.5f;
-                    } break;
-                    case BlockId::BUILDING: {
-                        color = Vec3::one * 0.8f;
-                    } break;
-                }
-
-                const Vec3 pos = BlockIndexToWorldPos(Vec3Int { (int)x, (int)y, (int)z }, blockSize, blockOrigin);
-                const Mat4 posTransform = Translate(pos);
-                if (drawTop) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * top;
-                    info->color = color;
-                }
-                if (drawBottom) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * bottom;
-                    info->color = color;
-                }
-                if (drawLeft) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * left;
-                    info->color = color;
-                }
-                if (drawRight) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * right;
-                    info->color = color;
-                }
-                if (drawFront) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * front;
-                    info->color = color;
-                }
-                if (drawBack) {
-                    BlockRenderInfo* info = renderInfo->Append();
-                    info->meshId = MeshId::TILE;
-                    info->model = posTransform * scale * back;
-                    info->color = color;
-                }
-            }
-        }
-    }
-}
-
-void GenerateCityBlocks(uint32 streetSize, uint32 sidewalkSize, uint32 buildingSize, uint32 buildingHeight,
-                        LinearAllocator* allocator, BlockGrid* blockGrid)
-{
-    MemSet(blockGrid, 0, sizeof(BlockGrid));
-
-    const uint32 cityBlockSize = streetSize + sidewalkSize * 2 + buildingSize;
-
-    Array<uint8> streetMask = allocator->NewArray<uint8>(cityBlockSize);
-    for (uint32 i = 0; i < cityBlockSize; i++) {
-        streetMask[i] = i < streetSize;
-    }
-    Array<uint8> sidewalkMask = allocator->NewArray<uint8>(cityBlockSize);
-    for (uint32 i = 0; i < cityBlockSize; i++) {
-        sidewalkMask[i] = (i >= streetSize && i < (streetSize + sidewalkSize))
-            || (i >= (streetSize + sidewalkSize + buildingSize) && i < (streetSize + 2 * sidewalkSize + buildingSize));
-    }
-    Array<uint8> buildingMask = allocator->NewArray<uint8>(cityBlockSize);
-    for (uint32 i = 0; i < cityBlockSize; i++) {
-        buildingMask[i] = i >= (streetSize + sidewalkSize) && i < (streetSize + sidewalkSize + buildingSize);
-    }
-
-    static_assert(BLOCK_ORIGIN.z > 0);
-    for (uint32 z = 0; z < blockGrid->SIZE; z++) {
-        for (uint32 y = 0; y < (*blockGrid)[z].SIZE; y++) {
-            for (uint32 x = 0; x < (*blockGrid)[z][y].SIZE; x++) {
-                const uint32 cityBlockX = x % cityBlockSize;
-                const uint32 cityBlockY = y % cityBlockSize;
-
-                const uint8 building = buildingMask[cityBlockX] * buildingMask[cityBlockY];
-                if ((int)z == BLOCK_ORIGIN.z - 1) {
-                    const uint8 street = streetMask[cityBlockX] + streetMask[cityBlockY];
-                    const uint8 sidewalk = sidewalkMask[cityBlockX] + sidewalkMask[cityBlockY];
-                    if (street) {
-                        (*blockGrid)[z][y][x].id = BlockId::STREET;
-                    }
-                    else if (sidewalk) {
-                        (*blockGrid)[z][y][x].id = BlockId::SIDEWALK;
-                    }
-                    else if (building) {
-                        (*blockGrid)[z][y][x].id = BlockId::BUILDING;
-                    }
-                }
-                else if (building && z - BLOCK_ORIGIN.z < buildingHeight) {
-                    (*blockGrid)[z][y][x].id = BlockId::BUILDING;
-                }
-            }
-        }
-    }
-}
-
-string GetLevelFilePath(const_string levelName, LinearAllocator* allocator)
-{
-    string path = AllocPrintf(allocator, "data/levels/%.*s.blockgrid", levelName.size, levelName.data);
-    DEBUG_ASSERT(path.data != nullptr);
-    return path;
-}
-
-bool LoadLevel(const_string levelName, BlockGrid* blockGrid, LinearAllocator* allocator)
-{
-    string path = GetLevelFilePath(levelName, allocator);
-    Array<uint8> data = LoadEntireFile(path, allocator);
-    if (data.data == nullptr) {
-        return false;
-    }
-    if (data.size != sizeof(Vec3Int) + sizeof(BlockGrid)) {
-        return false;
-    }
-
-    const Vec3Int* fileBlockGridSize = (Vec3Int*)data.data;
-    const BlockGrid* fileBlockGrid = (BlockGrid*)(data.data + sizeof(Vec3Int));
-    if ((uint32)fileBlockGridSize->x != (*blockGrid)[0][0].SIZE
-        || (uint32)fileBlockGridSize->y != (*blockGrid)[0].SIZE
-        || (uint32)fileBlockGridSize->z != blockGrid->SIZE) {
-        return false;
-    }
-
-    MemCopy(blockGrid, fileBlockGrid, sizeof(BlockGrid));
-
-    return true;
-}
-
-bool SaveLevel(const_string levelName, const BlockGrid& blockGrid, LinearAllocator* allocator)
-{
-    const Vec3Int blockGridSize = { (int)blockGrid[0][0].SIZE, (int)blockGrid[0].SIZE, (int)blockGrid.SIZE };
-
-    Array<uint8> data = allocator->NewArray<uint8>(sizeof(Vec3Int) + sizeof(BlockGrid));
-    MemCopy(data.data, &blockGridSize, sizeof(Vec3Int));
-    MemCopy(data.data + sizeof(Vec3Int), &blockGrid, sizeof(BlockGrid));
-
-    string path = GetLevelFilePath(levelName, allocator);
-    return WriteFile(path, data, false);
-}
-
-Array<string> GetSavedLevels(LinearAllocator* allocator)
-{
-    const Array<string> levelFiles = ListDir(ToString("data/levels"), allocator);
-    if (levelFiles.data == nullptr) {
-        return { .size = 0, .data = nullptr };
-    }
-
-    DynamicArray<string, LinearAllocator> validLevelFiles(allocator);
-    for (uint32 i = 0; i < levelFiles.size; i++) {
-        const uint32 find = SubstringSearch(levelFiles[i], ToString(".blockgrid"));
-        if (find != levelFiles[i].size) {
-            validLevelFiles.Append(levelFiles[i].SliceTo(find));
-        }
-    }
-
-    return validLevelFiles.ToArray();
-}
-
 APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 {
     UNREFERENCED_PARAMETER(queue);
@@ -324,37 +117,34 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Initialize memory if necessary
     if (!memory->initialized) {
-        appState->blockSize = DEFAULT_BLOCK_SIZE; // NOTE this needs to happen before UpdateBlocksRenderInfo
-        {
-            LinearAllocator allocator(transientState->scratch);
-
-            const Array<string> levels = GetSavedLevels(&allocator);
-            if (LoadLevel(levels[0], &appState->blocks.grid, &allocator)) {
-                LOG_INFO("Loaded block grid from %.*s\n", levels[0].size, levels[0].data);
-            }
-            else {
-                LOG_ERROR("Failed to load block grid from %.*s\n", levels[0].size, levels[0].data);
-            }
-
-            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                   &appState->blocks.renderInfo);
-        }
-
         const Vec3 startPos = Vec3 { 0.5f, 0.5f, CAMERA_HEIGHT };
 
         appState->cameraPos = startPos;
         appState->cameraAngles = Vec2 { 0.0f, 0.0f };
 
-        appState->collapsingMobIndex = appState->mobs.size;
+        appState->levelData.blockSize = DEFAULT_BLOCK_SIZE; // NOTE this needs to happen before UpdateBlocksRenderInfo
+        {
+            LinearAllocator allocator(transientState->scratch);
+
+            const Array<string> levels = GetSavedLevels(&allocator);
+            if (LoadLevel(levels[0], &appState->levelData, &allocator)) {
+                LOG_INFO("Loaded level %.*s\n", levels[0].size, levels[0].data);
+            }
+            else {
+                LOG_ERROR("Failed to load level %.*s\n", levels[0].size, levels[0].data);
+            }
+        }
+
+        appState->levelData.collapsingMobIndex = appState->levelData.mobs.size;
 
         // Debug views 
         appState->debugView = false;
 
-        appState->noclip = false;
+        appState->noclip = true; // false;
         appState->noclipPos = startPos;
 
         appState->blockEditor = false;
-        appState->sliderBlockSize.value = appState->blockSize;
+        appState->sliderBlockSize.value = appState->levelData.blockSize;
         appState->loadLevelDropdownState.selected = 0;
 
         memory->initialized = true;
@@ -473,31 +263,32 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         }
         else {
             const Vec3 prevPos = appState->noclip ? appState->noclipPos : appState->cameraPos;
-            const Vec3Int prevBlockIndex = WorldPosToBlockIndex(prevPos, appState->blockSize, BLOCKS_SIZE, BLOCK_ORIGIN);
+            const Vec3Int prevBlockIndex = WorldPosToBlockIndex(prevPos, appState->levelData.blockSize,
+                                                                BLOCKS_SIZE, BLOCK_ORIGIN);
 
             Rect range = {
                 .min = Vec2 { -1e8, -1e8 },
                 .max = Vec2 {  1e8,  1e8 },
             };
             if (prevBlockIndex.x >= 0 && prevBlockIndex.y >= 0) {
-                const Vec3 blockOrigin = BlockIndexToWorldPos(prevBlockIndex, appState->blockSize, BLOCK_ORIGIN);
-                if (!IsWalkable(appState->blocks.grid, prevBlockIndex - Vec3Int::unitX)) {
+                const Vec3 blockOrigin = BlockIndexToWorldPos(prevBlockIndex, appState->levelData.blockSize, BLOCK_ORIGIN);
+                if (!IsWalkable(appState->levelData, prevBlockIndex - Vec3Int::unitX)) {
                     range.min.x = blockOrigin.x + BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blocks.grid, prevBlockIndex + Vec3Int::unitX)) {
-                    range.max.x = blockOrigin.x + appState->blockSize - BLOCK_COLLISION_MARGIN;
+                if (!IsWalkable(appState->levelData, prevBlockIndex + Vec3Int::unitX)) {
+                    range.max.x = blockOrigin.x + appState->levelData.blockSize - BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blocks.grid, prevBlockIndex - Vec3Int::unitY)) {
+                if (!IsWalkable(appState->levelData, prevBlockIndex - Vec3Int::unitY)) {
                     range.min.y = blockOrigin.y + BLOCK_COLLISION_MARGIN;
                 }
-                if (!IsWalkable(appState->blocks.grid, prevBlockIndex + Vec3Int::unitY)) {
-                    range.max.y = blockOrigin.y + appState->blockSize - BLOCK_COLLISION_MARGIN;
+                if (!IsWalkable(appState->levelData, prevBlockIndex + Vec3Int::unitY)) {
+                    range.max.y = blockOrigin.y + appState->levelData.blockSize - BLOCK_COLLISION_MARGIN;
                 }
             }
 
             Vec3 newPos = appState->cameraPos + velocity;
             const Vec2 prevPos2 = { prevPos.x, prevPos.y };
-            if (IsWalkable(appState->blocks.grid, prevBlockIndex)) {
+            if (IsWalkable(appState->levelData, prevBlockIndex)) {
                 newPos.x = ClampFloat32(newPos.x, range.min.x, range.max.x);
                 newPos.y = ClampFloat32(newPos.y, range.min.y, range.max.y);
             }
@@ -506,7 +297,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     }
 
     const Vec3 currentPos = appState->noclip ? appState->noclipPos : appState->cameraPos;
-    const Vec3Int blockIndex = WorldPosToBlockIndex(currentPos, appState->blockSize, BLOCKS_SIZE, BLOCK_ORIGIN);
+    const Vec3Int blockIndex = WorldPosToBlockIndex(currentPos, appState->levelData.blockSize,
+                                                    BLOCKS_SIZE, BLOCK_ORIGIN);
 
     const Quat cameraRot = cameraRotPitch * cameraRotYaw;
     const Mat4 cameraRotMat4 = UnitQuatToMat4(cameraRot);
@@ -514,10 +306,10 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
     const Quat inverseCameraRot = Inverse(cameraRot);
     const Vec3 cameraForward = inverseCameraRot * Vec3::unitX;
 
-    uint32 hoverMobIndex = appState->mobs.size;
+    uint32 hoverMobIndex = appState->levelData.mobs.size;
     float32 hoverMobMinDist = 1e8;
-    for (uint32 i = 0; i < appState->mobs.size; i++) {
-        const Mob& mob = appState->mobs[i];
+    for (uint32 i = 0; i < appState->levelData.mobs.size; i++) {
+        const Mob& mob = appState->levelData.mobs[i];
         if (mob.collapsed) continue;
 
         const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
@@ -537,26 +329,26 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         }
     }
 
-    if (appState->collapsingMobIndex != appState->mobs.size) {
-        if (appState->collapsingMobIndex != hoverMobIndex || !MouseDown(input, KM_MOUSE_LEFT)) {
-            appState->collapsingMobIndex = appState->mobs.size;
+    if (appState->levelData.collapsingMobIndex != appState->levelData.mobs.size) {
+        if (appState->levelData.collapsingMobIndex != hoverMobIndex || !MouseDown(input, KM_MOUSE_LEFT)) {
+            appState->levelData.collapsingMobIndex = appState->levelData.mobs.size;
         }
     }
-    else if (hoverMobIndex != appState->mobs.size && MousePressed(input, KM_MOUSE_LEFT)) {
-        appState->collapsingMobIndex = hoverMobIndex;
+    else if (hoverMobIndex != appState->levelData.mobs.size && MousePressed(input, KM_MOUSE_LEFT)) {
+        appState->levelData.collapsingMobIndex = hoverMobIndex;
     }
 
     const float32 totalCollapseTime = 2.0f;
     const float32 totalUncollapseTime = 0.6f;
 
-    for (uint32 i = 0; i < appState->mobs.size; i++) {
-        Mob& mob = appState->mobs[i];
+    for (uint32 i = 0; i < appState->levelData.mobs.size; i++) {
+        Mob& mob = appState->levelData.mobs[i];
 
-        if (i == appState->collapsingMobIndex) {
+        if (i == appState->levelData.collapsingMobIndex) {
             mob.collapseT += deltaTime / totalCollapseTime;
             if (mob.collapseT >= 1.0f) {
                 mob.collapsed = true;
-                appState->collapsingMobIndex = appState->mobs.size;
+                appState->levelData.collapsingMobIndex = appState->levelData.mobs.size;
             }
         }
         else if (mob.collapseT < 1.0f) {
@@ -636,7 +428,7 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             const Vec3 rayOrigin = appState->noclip ? appState->noclipPos : appState->cameraPos;
             const Vec3 inverseRayDir = Reciprocal(cameraForward);
 
-            const Vec3Int startBlockIndex = WorldPosToBlockIndex(rayOrigin, appState->blockSize,
+            const Vec3Int startBlockIndex = WorldPosToBlockIndex(rayOrigin, appState->levelData.blockSize,
                                                                  BLOCKS_SIZE, BLOCK_ORIGIN);
             const int signX = cameraForward.x > 0.0f ? 1 : -1;
             const int signY = cameraForward.y > 0.0f ? 1 : -1;
@@ -655,14 +447,14 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                             blockInd.z < 0 || blockInd.z >= BLOCKS_SIZE.z) {
                             continue;
                         }
-                        if (appState->blocks.grid[blockInd.z][blockInd.y][blockInd.x].id == BlockId::NONE) {
+                        if (appState->levelData.grid[blockInd.z][blockInd.y][blockInd.x].id == BlockId::NONE) {
                             continue;
                         }
 
-                        const Vec3 blockPos = BlockIndexToWorldPos(blockInd, appState->blockSize, BLOCK_ORIGIN);
+                        const Vec3 blockPos = BlockIndexToWorldPos(blockInd, appState->levelData.blockSize, BLOCK_ORIGIN);
                         const Box box = {
                             .min = blockPos,
-                            .max = blockPos + Vec3 { appState->blockSize, appState->blockSize, appState->blockSize },
+                            .max = blockPos + Vec3 { appState->levelData.blockSize, appState->levelData.blockSize, appState->levelData.blockSize },
                         };
                         float32 t;
                         if (RayAxisAlignedBoxIntersection(rayOrigin, inverseRayDir, box, &t)) {
@@ -695,17 +487,17 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         panelBlockEditor.Text(AllocPrintf(&allocator, "%d x %d x %d blocks",
                                           BLOCKS_SIZE.x, BLOCKS_SIZE.y, BLOCKS_SIZE.z));
 
+#if 0
         panelBlockEditor.Text(ToString("block size:"));
         if (panelBlockEditor.SliderFloat(&appState->sliderBlockSize, 1.0f, 4.0f)) {
-            appState->blockSize = appState->sliderBlockSize.value;
-            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                   &appState->blocks.renderInfo);
+            appState->levelData.blockSize = appState->sliderBlockSize.value;
         }
+#endif
 
         panelBlockEditor.Text(string::empty);
 
         if (panelBlockEditor.Button(ToString("Clear mobs (C)")) || KeyPressed(input, KM_KEY_C)) {
-            appState->mobs.Clear();
+            appState->levelData.mobs.Clear();
         }
 
         panelBlockEditor.Text(string::empty);
@@ -714,22 +506,19 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         const Array<string> levels = GetSavedLevels(&allocator);
         if (panelBlockEditor.Dropdown(&appState->loadLevelDropdownState, levels)) {
             const_string level = levels[appState->loadLevelDropdownState.selected];
-            if (LoadLevel(level, &appState->blocks.grid, &allocator)) {
+            if (LoadLevel(level, &appState->levelData, &allocator)) {
                 LOG_INFO("Loaded level %.*s\n", level.size, level.data);
             }
             else {
                 LOG_ERROR("Failed to load level %.*s\n", level.size, level.data);
             }
-
-            UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                   &appState->blocks.renderInfo);
         }
 
         panelBlockEditor.Text(string::empty);
 
         if (panelBlockEditor.Button(ToString("Save"))) {
             const_string level = levels[appState->loadLevelDropdownState.selected];
-            if (SaveLevel(level, appState->blocks.grid, &allocator)) {
+            if (SaveLevel(level, appState->levelData, &allocator)) {
                 LOG_INFO("Saved level %.*s\n", level.size, level.data);
             }
             else {
@@ -742,24 +531,27 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
             panelBlockEditor.Text(AllocPrintf(&allocator, "block %d, %d, %d", hitIndex.x, hitIndex.y, hitIndex.z));
             panelBlockEditor.Text(AllocPrintf(&allocator, "distance %.02f", hitMinDist));
 
-            bool blockGridChanged = false;
+            FixedArray<BlockUpdate, 2> updates;
+            updates.Clear();
             if (appState->blockEditor && !blockEditorChanged) {
                 if (MousePressed(input, KM_MOUSE_LEFT)) {
-                    appState->blocks.grid[hitIndex.z][hitIndex.y][hitIndex.x].id = BlockId::NONE;
-                    blockGridChanged = true;
+                    BlockUpdate* update = updates.Append();
+                    update->index = hitIndex;
+                    update->block = { .id = BlockId::NONE };
                 }
                 if (MousePressed(input, KM_MOUSE_RIGHT)) {
                     if (hitIndex.z != BLOCKS_SIZE.z - 1) {
                         if (KeyDown(input, KM_KEY_SHIFT)) {
                             const Vec3 hitboxRadius = { 0.5f, 0.5f, 1.3f };
-                            const Vec3 blockPos = BlockIndexToWorldPos(hitIndex, appState->blockSize, BLOCK_ORIGIN);
+                            const Vec3 blockPos = BlockIndexToWorldPos(hitIndex, appState->levelData.blockSize,
+                                                                       BLOCK_ORIGIN);
                             const Vec3 mobOffset = Vec3 {
-                                appState->blockSize / 2.0f,
-                                appState->blockSize / 2.0f,
+                                appState->levelData.blockSize / 2.0f,
+                                appState->levelData.blockSize / 2.0f,
                                 2.2f
                             };
 
-                            Mob* newMob = appState->mobs.Append();
+                            Mob* newMob = appState->levelData.mobs.Append();
                             newMob->pos = blockPos + mobOffset;
                             newMob->yaw = ModFloat32(appState->cameraAngles.x + PI_F, 2.0f * PI_F);
                             newMob->hitbox = {
@@ -770,16 +562,16 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                             newMob->collapsed = false;
                         }
                         else {
-                            appState->blocks.grid[hitIndex.z + 1][hitIndex.y][hitIndex.x].id = BlockId::SIDEWALK;
-                            blockGridChanged = true;
+                            BlockUpdate* update = updates.Append();
+                            update->index = hitIndex + Vec3Int::unitZ;
+                            update->block = { .id = BlockId::SIDEWALK };
                         }
                     }
                 }
             }
 
-            if (blockGridChanged) {
-                UpdateBlocksRenderInfo(appState->blocks.grid, appState->blockSize, BLOCK_ORIGIN,
-                                       &appState->blocks.renderInfo);
+            if (updates.size > 0) {
+                SubmitBlockUpdates(updates.ToArray(), &appState->levelData);
             }
         }
 
@@ -820,10 +612,11 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
                        &transientState->frameState.spriteRenderState, &transientState->frameState.textRenderState);
     }
 
+#if ENABLE_GRID
     // Draw mobs
     {
-        for (uint32 i = 0; i < appState->mobs.size; i++) {
-            const Mob& mob = appState->mobs[i];
+        for (uint32 i = 0; i < appState->levelData.mobs.size; i++) {
+            const Mob& mob = appState->levelData.mobs[i];
             if (mob.collapsed) continue;
 
             const Mat4 model = Translate(mob.pos) * Rotate(Vec3 { 0.0f, 0.0f, mob.yaw }) * Scale(0.45f);
@@ -834,8 +627,8 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
 
     // Draw blocks
     {
-        for (uint32 i = 0; i < appState->blocks.renderInfo.size; i++) {
-            const BlockRenderInfo& renderInfo = appState->blocks.renderInfo[i];
+        for (uint32 i = 0; i < appState->levelData.gridRenderInfo.size; i++) {
+            const BlockRenderInfo& renderInfo = appState->levelData.gridRenderInfo[i];
             PushMesh(renderInfo.meshId, renderInfo.model, renderInfo.color, Vec3::zero, 0.0f,
                      &transientState->frameState.meshRenderState);
         }
@@ -851,16 +644,17 @@ APP_UPDATE_AND_RENDER_FUNCTION(AppUpdateAndRender)
         };
         const Vec2Int crosshairSize = { crosshairPixels, crosshairPixels };
         Vec4 crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 0.2f };
-        if (appState->collapsingMobIndex != appState->mobs.size) {
+        if (appState->levelData.collapsingMobIndex != appState->levelData.mobs.size) {
             crosshairColor = Vec4 { 1.0f, 0.5f, 0.5f, 1.0f };
         }
-        else if (hoverMobIndex != appState->mobs.size) {
+        else if (hoverMobIndex != appState->levelData.mobs.size) {
             crosshairColor = Vec4 { 1.0f, 1.0f, 1.0f, 0.8f };
         }
 
         PushSprite((uint32)SpriteId::PIXEL, crosshairPos, crosshairSize, 0.0f, crosshairColor, screenSize,
                    &transientState->frameState.spriteRenderState);
     }
+#endif
 
     // ================================================================================================
     // Vulkan rendering ===============================================================================
@@ -1201,6 +995,7 @@ APP_UNLOAD_VULKAN_WINDOW_STATE_FUNCTION(AppUnloadVulkanWindowState)
 }
 
 #include "imgui.cpp"
+#include "level.cpp"
 #include "lightmap.cpp"
 #include "mesh.cpp"
 
